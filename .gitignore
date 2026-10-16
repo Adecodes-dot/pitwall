@@ -1,0 +1,14 @@
+*.db
+*.db-shm
+*.db-wal
+*.log
+.env
+captures/*.bin
+captures/*.pwcap
+dist/
+docs/milestones/*-run.txt
+models/
+models/*.tar.bz2
+node_modules/
+playwright-report/
+test-results/

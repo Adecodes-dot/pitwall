@@ -1,0 +1,92 @@
+{
+  "name": "pitwall",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pit Wall — AI race engineer companion for PS5 sim racers (F1 25, GT7)",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "node src/server/main.ts live",
+    "replay": "node src/server/main.ts replay",
+    "synth": "node src/server/main.ts synth",
+    "capture:synth": "node scripts/make-synthetic-capture.ts",
+    "demo:m1": "node scripts/demo-m1.ts",
+    "ui:dev": "vite --config ui/vite.config.ts",
+    "ui:build": "vite build --config ui/vite.config.ts",
+    "screenshots": "node scripts/screenshots.ts",
+    "demo:m2": "node scripts/demo-m2.ts",
+    "demo:m3": "node scripts/demo-m3.ts",
+    "latency": "node scripts/latency.ts",
+    "voice:get": "node scripts/get-voice.ts",
+    "demo:m4": "node scripts/demo-m4.ts",
+    "bundle:server": "node scripts/build-win.ts --bundle-only",
+    "build:win": "node scripts/build-win.ts",
+    "app:dev": "electron app/main.cjs --dev"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
+    "@echogarden/audio-io": "^0.4.2",
+    "sherpa-onnx-node": "^1.13.8",
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@types/ws": "^8.5.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "electron": "^44.8.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "typescript": "^5.6.0",
+    "uplot": "^1.6.30",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0"
+  },
+  "main": "app/main.cjs",
+  "build": {
+    "appId": "dev.pitwall.companion",
+    "productName": "Pit Wall",
+    "directories": {
+      "output": "dist/installer"
+    },
+    "files": [
+      "app/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/pkg",
+        "to": "app"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "app/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "Pit Wall"
+    },
+    "asar": true,
+    "afterPack": "app/afterPack.cjs"
+  }
+}
