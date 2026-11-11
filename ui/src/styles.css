@@ -81,4 +81,7 @@ a.btn { display: inline-block; font: inherit; color: var(--fg); background: var(
 .step.done { background: var(--ok); color: #0b0f14; border-color: var(--ok); }
 .big-light { width: 22px; height: 22px; }
 .setup details summary { cursor: pointer; }
-select { font: inherit; color: var(--fg); background: var(--bg-sunken); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-height: 40px; }
+select, input[type="text"], input:not([type]) { font: inherit; color: var(--fg); background: var(--bg-sunken); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-height: 40px; }
+
+.mic-bar { height: 14px; }
+.voice .chip { font-size: 12px; }

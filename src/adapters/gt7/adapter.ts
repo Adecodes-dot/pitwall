@@ -116,7 +116,7 @@ export class Gt7Adapter implements Adapter {
   private lastSeenLastLapMs = -1;
 
   private toFrame(p: Gt7Packet, t: number, onTrack: boolean, paused: boolean): NormalisedFrame {
-    const fr = emptyFrame('gt7', t, this.seq);
+    const fr = emptyFrame('gt7', t, p.packetId);
     fr.gameTime = (p.packetId - this.firstPacketId) / GT7_HZ;
     const ticksThisLap = this.lapStartPacketId >= 0 ? p.packetId - this.lapStartPacketId : null;
     fr.lap = {

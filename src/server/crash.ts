@@ -17,7 +17,7 @@ export class CrashReporter {
     mkdirSync(dir, { recursive: true });
     this.logFile = join(dir, `session-${new Date().toISOString().slice(0, 10)}.log`);
     bus.on('log', (l) => this.note(`[${l.level}] ${l.msg}`));
-    bus.on('event', (e) => { if (e.type !== 'lap.complete') return; this.note(`event lap.complete L${e.lapNumber} ${e.timeMs} ms`); });
+    bus.on('event', (e) => this.note(e.type === 'lap.complete' ? `event lap.complete L${e.lapNumber} ${e.timeMs} ms valid=${e.valid}` : `event ${JSON.stringify(e)}`));
     this.prune();
   }
   setEnabled(on: boolean): void { this.enabled = on; }

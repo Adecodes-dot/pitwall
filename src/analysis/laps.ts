@@ -26,10 +26,17 @@ export interface LapChannels {
 
 export interface Lap {
   number: number;
+  /** longest hole between consecutive frames, ms (stream outage or heavy loss inside the lap) */
+  maxGapMs: number;
   timeMs: number;         // -1 if unknown
   valid: boolean | null;
   samples: LapSample[];
   ch: LapChannels | null;
+  /** cut back by a flashback: driven for real and good for "where am I losing time", but kept out of the reference, the
+   *  theoretical best and the debrief ranking until rewound traces are proven exact */
+  rewound?: boolean;
+  /** part of it was in the pit lane (in-lap, out-lap): limiter speeds and another line, so it gets no trace */
+  pit?: boolean;
 }
 
 export function toLapSample(f: NormalisedFrame): LapSample {
@@ -45,13 +52,31 @@ export class LapCollector {
   private buffers = new Map<number, LapSample[]>();
   laps: Lap[] = [];
   currentLapNumber: number | null = null;
+  /** frames ignored because the car was not on track / had no lap number (diagnostics) */
+  skipped = { offTrack: 0, noLap: 0, outLap: 0 };
+  accepted = 0;
+  /** laps cut back by a flashback (diagnostics) */
+  rewinds = 0;
+  private rewound = new Set<number>();
+  private pitted = new Set<number>();
 
   feed(f: NormalisedFrame): void {
     const n = f.lap.number;
-    if (n === null || f.flags.onTrack === false) return;
+    if (n === null) { this.skipped.noLap++; return; }
+    if (f.flags.onTrack === false) { this.skipped.offTrack++; return; }
+    // F1 out laps share their lap number with the flying lap that follows: the game's timer reads 0 until the line, and
+    // the lap distance is negative (qualifying, from the pits) or already far along (practice). Not part of the lap.
+    const d = f.lap.distance;
+    if (d !== null && (d < 0 || (f.lap.currentTimeMs === 0 && d > 100))) { this.skipped.outLap++; return; }
+    this.accepted++;
+    if (f.flags.pitting === true) this.pitted.add(n); // after the out-lap skip: a qualifying run leaves the pits on the lap before
     this.currentLapNumber = n;
     let b = this.buffers.get(n);
     if (!b) { b = []; this.buffers.set(n, b); }
+    // the lap timer went back within the same lap number: a flashback rewinds the car and its timer together, so cut the lap
+    // back to that moment and keep it (a restart at the line cuts back to nothing, which starts the lap again)
+    const cur = f.lap.currentTimeMs, last = b[b.length - 1];
+    if (cur !== null && last && last.lapTimeMs !== null && cur < last.lapTimeMs - 200) { while (b.length && b[b.length - 1]!.lapTimeMs !== null && b[b.length - 1]!.lapTimeMs! >= cur) b.pop(); this.rewinds++; this.rewound.add(n); }
     b.push(toLapSample(f));
     // forget buffers older than 3 laps that never completed (restarts, pit)
     for (const k of this.buffers.keys()) if (k < n - 3) this.buffers.delete(k);
@@ -62,7 +87,11 @@ export class LapCollector {
     const samples = this.buffers.get(lapNumber);
     this.buffers.delete(lapNumber);
     if (!samples || samples.length < 10) return null;
-    const lap: Lap = { number: lapNumber, timeMs, valid, samples, ch: null };
+    let maxGapMs = 0;
+    // a hole in the lap is measured on the game's lap timer where there is one: after a flashback the wall clock jumps
+    // (time spent rewinding) while the lap itself is continuous; an outage moves both
+    for (let i = 1; i < samples.length; i++) { const a = samples[i - 1]!, c = samples[i]!; maxGapMs = Math.max(maxGapMs, a.lapTimeMs !== null && c.lapTimeMs !== null ? c.lapTimeMs - a.lapTimeMs : c.t - a.t); }
+    const lap: Lap = { number: lapNumber, maxGapMs, timeMs, valid, samples, ch: null, ...(this.rewound.delete(lapNumber) ? { rewound: true } : {}), ...(this.pitted.delete(lapNumber) ? { pit: true } : {}) };
     this.laps.push(lap);
     return lap;
   }
@@ -70,7 +99,7 @@ export class LapCollector {
   /** Samples of the lap in progress (for live per-corner feedback later). */
   current(): LapSample[] { return this.currentLapNumber === null ? [] : this.buffers.get(this.currentLapNumber) ?? []; }
 
-  reset(): void { this.buffers.clear(); this.laps = []; this.currentLapNumber = null; }
+  reset(): void { this.buffers.clear(); this.laps = []; this.currentLapNumber = null; this.rewound.clear(); this.pitted.clear(); }
 }
 
 /** Fill `s` for samples that lack it by projecting xz onto the track model. */
@@ -136,7 +165,7 @@ export function timeAt(ch: LapChannels, s: number, lapTimeMs: number): number {
 
 export function personalBest(laps: Lap[]): Lap | null {
   let best: Lap | null = null;
-  for (const l of laps) if (l.ch && l.timeMs > 0 && l.valid !== false && (!best || l.timeMs < best.timeMs)) best = l;
+  for (const l of laps) if (l.ch && !l.rewound && l.timeMs > 0 && l.valid !== false && (!best || l.timeMs < best.timeMs)) best = l;
   return best;
 }
 
@@ -147,7 +176,7 @@ export function microSectors(laps: Lap[], L: number, binM = 50): MicroSectors {
   const bins = Math.ceil(L / binM);
   const bestMs = new Float32Array(bins).fill(Infinity), bestLap = new Int32Array(bins).fill(-1);
   for (const l of laps) {
-    if (!l.ch || l.timeMs <= 0 || l.valid === false) continue;
+    if (!l.ch || l.rewound || l.timeMs <= 0 || l.valid === false) continue;
     for (let b = 0; b < bins; b++) {
       const s0 = b * binM, s1 = Math.min(L, (b + 1) * binM);
       const dt = timeAt(l.ch, s1, l.timeMs) - timeAt(l.ch, s0, l.timeMs);

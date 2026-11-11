@@ -26,7 +26,9 @@
     "demo:m4": "node scripts/demo-m4.ts",
     "bundle:server": "node scripts/build-win.ts --bundle-only",
     "build:win": "node scripts/build-win.ts",
-    "app:dev": "electron app/main.cjs --dev"
+    "app:dev": "electron app/main.cjs --dev",
+    "voice:e2e": "node scripts/voice-e2e.ts",
+    "asr:bench": "node scripts/asr-benchmark.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",
@@ -87,6 +89,7 @@
       "shortcutName": "Pit Wall"
     },
     "asar": true,
+    "electronDist": "node_modules/electron/dist",
     "afterPack": "app/afterPack.cjs"
   }
 }

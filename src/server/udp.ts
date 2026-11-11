@@ -31,7 +31,9 @@ export class UdpIngest {
     this.f1.on('message', (msg) => this.engine.ingest(new Uint8Array(msg.buffer, msg.byteOffset, msg.byteLength), f1Port, performance.now()));
     this.f1.on('error', (e) => { this.errors.push(`F1 socket: ${e.message}`); bus.emit('log', { level: 'error', msg: `F1 UDP ${f1Port}: ${e.message}` }); });
     await new Promise<void>((res, rej) => this.f1!.bind(f1Port, '0.0.0.0', () => res()).once('error', rej));
-    bus.emit('log', { level: 'info', msg: `listening for F1 on udp/${f1Port}` });
+    // Windows' default UDP receive buffer is 64 KB (~10 F1 frames); a short event-loop stall would drop packets
+    try { this.f1.setRecvBufferSize(4 * 1024 * 1024); } catch { /* keep default */ }
+    bus.emit('log', { level: 'info', msg: `listening for F1 on udp/${f1Port} (recv buffer ${this.f1.getRecvBufferSize()} B)` });
 
     this.gt7 = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     this.gt7.on('message', (msg, rinfo) => {
@@ -40,6 +42,7 @@ export class UdpIngest {
     });
     this.gt7.on('error', (e) => { this.errors.push(`GT7 socket: ${e.message}`); bus.emit('log', { level: 'error', msg: `GT7 UDP ${GT7_RECV_PORT}: ${e.message}` }); });
     await new Promise<void>((res, rej) => this.gt7!.bind(GT7_RECV_PORT, '0.0.0.0', () => res()).once('error', rej));
+    try { this.gt7.setRecvBufferSize(4 * 1024 * 1024); } catch { /* keep default */ }
     this.gt7.setBroadcast(true);
     const hbMs = this.opts.heartbeatMs ?? 1500;
     const send = () => {

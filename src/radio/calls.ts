@@ -16,7 +16,8 @@ const mk = (text: string, priority: Priority, key: string, reason: string, facts
 /** Lap time read the way an engineer says it: 1:32.456 → "one thirty-two four" */
 export function sayLapTime(ms: number): string {
   const m = Math.floor(ms / 60000), s = Math.floor((ms % 60000) / 1000), tenth = Math.floor((ms % 1000) / 100);
-  return `${NUM[m] ?? m} ${s < 10 ? 'oh ' + NUM[s] : TENS(s)} ${NUM[tenth]}`;
+  // "one thirty point three": without "point", 1:30.3 is heard as 1:33
+  return `${NUM[m] ?? m} ${s < 10 ? 'oh ' + NUM[s] : TENS(s)} point ${NUM[tenth]}`;
 }
 const NUM = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
 const TENS = (n: number): string => n < 20 ? NUM[n]! : `${['', '', 'twenty', 'thirty', 'forty', 'fifty'][Math.floor(n / 10)]}${n % 10 ? '-' + NUM[n % 10] : ''}`;
@@ -82,6 +83,10 @@ export interface CoachingInput {
 
 export interface Diagnosis { text: string; kind: string; reason: string; facts: Call['facts'] }
 
+/** a corner pass this much slower than the comparison is an incident (spin, off, contact, a stop), not technique:
+ *  no coaching from it. Miami race: real technique losses were up to 0.8 s a corner, incidents 4.6 and 9.5 s. */
+export const INCIDENT_MS = 2000;
+
 /** One idea per corner, chosen by the largest clear cause. Shared by the radio (next lap) and the debrief. */
 export function diagnoseCorner(corner: number, m: CornerMetrics, best: CornerMetrics, deltaMs: number, flags: { lockedHere: boolean; spunHere: boolean }, assists: { abs: boolean | null; tc: number | null }): Diagnosis {
   const T = `Turn ${corner}`;
@@ -111,7 +116,7 @@ export function coachingCalls(inp: CoachingInput, ctx: CallContext): Call[] {
   const out: Call[] = [];
   for (const wc of u.worstCorners) {
     if (out.length >= inp.max) break;
-    if (wc.deltaMs < 120) continue; // under 0.12 s: noise
+    if (wc.deltaMs < 120 || wc.deltaMs > INCIDENT_MS) continue; // under 0.12 s: noise; over INCIDENT_MS: an incident
     const m = last.corners.find((c) => c.corner === wc.corner);
     const st = fp.corners.find((c) => c.corner === wc.corner);
     if (!m || !st) continue;
@@ -133,7 +138,7 @@ export function lapCalls(u: AnalysisUpdate, prevPbMs: number | null, mode: 'quie
   if (isPb) out.push(mk(`That's a new best, ${sayLapTime(last.timeMs)}.`, 4, `pb:${last.number}`, 'personal best this session', { lapMs: last.timeMs, lap: last.number }, ctx, { ttlMs: 60000 }));
   else if (mode === 'coach' && last.deltaToPbMs !== null) {
     const tenths = Math.round(last.deltaToPbMs / 100);
-    const suffix = u.laps.length < 2 || tenths <= 0 ? '' : tenths === 1 ? ', a tenth off' : `, ${NUM[Math.min(19, tenths)] ?? tenths} tenths off`;
+    const suffix = u.laps.length < 2 || tenths <= 0 ? '' : tenths === 1 ? ', a tenth off' : tenths < 10 ? `, ${NUM[tenths]} tenths off` : `, ${NUM[Math.floor(tenths / 10)] ?? Math.floor(tenths / 10)} point ${NUM[tenths % 10]} off`;
     out.push(mk(`${sayLapTime(last.timeMs)}${suffix}.`, 4, `lap:${last.number}`, 'lap time readout (coach mode)', { lapMs: last.timeMs, deltaMs: last.deltaToPbMs }, ctx, { ttlMs: 40000 }));
   }
   const fp = u.fingerprint;

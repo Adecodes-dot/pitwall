@@ -52,6 +52,7 @@ function frameBurst(a: F1Adapter, format: F1Format, frameId: number, t: number, 
   feed(encodeF1({ format, packetId: PacketId.CarTelemetry, header: h, car: { speed: o.speed ?? 0, throttle: 1, brake: 0, steer: -0.2, gear: 7, engineRPM: 11000, tyresSurfaceTemperature: [1, 2, 3, 4], tyresInnerTemperature: [5, 6, 7, 8], surfaceType: [0, 0, 0, 0] } }));
   feed(encodeF1({ format, packetId: PacketId.CarStatus, header: h, car: { tractionControl: 1, antiLockBrakes: 1, fuelInTank: 40, fuelRemainingLaps: 3.5, maxRPM: 13000, vehicleFiaFlags: 0 } }));
   feed(encodeF1({ format, packetId: PacketId.MotionEx, header: h, body: { wheelSpeed: o.wheelSpeed ?? [80, 80, 82, 82], wheelSlipRatio: [0, 0, 0.1, 0.1] } }));
+  const rest = a.tick(t + 1000); out.frames.push(...rest.frames); // a frame is emitted when the next begins; close this one now
   return out;
 }
 
@@ -69,7 +70,7 @@ describe('f1 adapter', () => {
     expect(f.wheels.surfaceTemp).toEqual([3, 4, 1, 2]); // RL RR FL FR → FL FR RL RR
     expect(f.wheels.speed).toEqual([82, 83, 80, 81]);
     expect(f.assists).toMatchObject({ tc: 1, abs: true, gearbox: 'manual', racingLine: 2 });
-    expect(f.fuel.lapsRemaining).toBeCloseTo(3.5);
+    expect(f.fuel.lapsRemaining).toBeNull(); // time trial: no finish line to measure the fuel display against
     expect(f.input.steer).toBeCloseTo(-0.2);
     expect(f.flags.onTrack).toBe(true);
     expect(f.seq).toBe(10);
@@ -102,5 +103,25 @@ describe('f1 adapter', () => {
     const flbk = new Uint8Array(12); new DataView(flbk.buffer).setFloat32(4, 12.5, true);
     const r2 = a.feed(encodeF1({ format: 2025, packetId: PacketId.Event, body: { eventStringCode: 'FLBK', details: Array.from(flbk) } }), 1);
     expect(r2.events).toContainEqual(expect.objectContaining({ type: 'flashback', toSessionTime: 12.5 }));
+  });
+});
+
+describe('f1 adapter frame assembly', () => {
+  // order captured from the real 2026 game (F1 25 + Season Pack, 2026-10-26)
+  const ORDER = [PacketId.LapData, PacketId.Motion, PacketId.MotionEx, PacketId.CarTelemetry, PacketId.CarStatus, PacketId.CarTelemetry2];
+  it('keeps lap, motion and telemetry together when MotionEx arrives before telemetry', () => {
+    const ad = new F1Adapter();
+    const frames = [];
+    for (let fid = 1; fid <= 3; fid++) {
+      for (const packetId of ORDER) {
+        const car = packetId === PacketId.LapData ? { currentLapNum: 2, lapDistance: 100 * fid, currentLapTimeInMS: 1000 * fid } : packetId === PacketId.CarTelemetry ? { speed: 180, throttle: 1 } : {};
+        const o = ad.feed(encodeF1({ format: 2026, packetId, header: { frameIdentifier: fid, overallFrameIdentifier: fid, sessionTime: fid / 60 }, car }), fid * 16);
+        frames.push(...o.frames);
+      }
+    }
+    // the last frame is emitted when the next one begins, so two of the three are out
+    expect(frames.length).toBe(2);
+    for (const f of frames) { expect(f.lap.number).toBe(2); expect(f.lap.distance).not.toBeNull(); expect(f.pos).not.toBeNull(); expect(f.input.throttle).toBe(1); expect(f.flags.onTrack).not.toBeNull(); }
+    expect(frames[1]!.lap.distance).toBe(200);
   });
 });

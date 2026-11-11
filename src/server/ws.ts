@@ -9,10 +9,10 @@ import type { Server } from 'node:http';
 import type { Engine } from './engine.ts';
 import type { NormalisedFrame } from '../core/types.ts';
 
-export type Channel = 'status' | 'telemetry' | 'event' | 'log' | 'analysis' | 'radio' | 'audio';
-const ALL: Channel[] = ['status', 'telemetry', 'event', 'log', 'analysis', 'radio', 'audio'];
+export type Channel = 'status' | 'telemetry' | 'event' | 'log' | 'analysis' | 'radio' | 'audio' | 'voice';
+const ALL: Channel[] = ['status', 'telemetry', 'event', 'log', 'analysis', 'radio', 'audio', 'voice'];
 
-export interface WsOptions { telemetryHz?: number; onCommand?: (cmd: string, args: Record<string, unknown>, reply: (msg: unknown) => void) => void }
+export interface WsOptions { telemetryHz?: number; /** binary frames from a page's microphone: 16 kHz mono int16 */ onAudio?: (samples: Int16Array) => void; onCommand?: (cmd: string, args: Record<string, unknown>, reply: (msg: unknown) => void) => void }
 
 export function attachWs(server: Server, engine: Engine, opts: WsOptions = {}): WebSocketServer {
   const wss = new WebSocketServer({ server, path: '/ws' });
@@ -33,13 +33,21 @@ export function attachWs(server: Server, engine: Engine, opts: WsOptions = {}): 
   engine.bus.on('analysis', (a) => { lastAnalysis = a; send('analysis', a); });
   engine.bus.on('radio', (c) => send('radio', c));
   engine.bus.on('audio', (a) => send('audio', a));
+  engine.bus.on('voice', (e) => send('voice', e));
   const interval = setInterval(() => { if (latest && latest !== lastSent) { lastSent = latest; send('telemetry', latest); } }, 1000 / (opts.telemetryHz ?? 20));
 
   wss.on('connection', (ws) => {
     subs.set(ws, new Set(ALL));
     ws.send(JSON.stringify({ ch: 'status', payload: engine.status(performance.now()) }));
     if (lastAnalysis) ws.send(JSON.stringify({ ch: 'analysis', payload: lastAnalysis }));
-    ws.on('message', (raw) => {
+    ws.on('message', (raw, isBinary) => {
+      if (isBinary) {
+        const b = raw as Buffer;
+        // copy: a ws Buffer may start at an odd offset inside a pooled ArrayBuffer
+        const ab = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength - (b.byteLength % 2));
+        opts.onAudio?.(new Int16Array(ab));
+        return;
+      }
       let m: { subscribe?: Channel[]; cmd?: string; args?: Record<string, unknown> };
       try { m = JSON.parse(raw.toString()); } catch { return; }
       if (Array.isArray(m.subscribe)) subs.set(ws, new Set(m.subscribe.filter((c): c is Channel => ALL.includes(c))));

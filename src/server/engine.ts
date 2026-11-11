@@ -13,7 +13,7 @@ export const F1_PORT = 20777;
 export const GT7_RECV_PORT = 33740;
 export const GT7_SEND_PORT = 33739;
 
-export interface EngineOptions { mode: StatusSnapshot['mode']; lanIp: string | null }
+export interface EngineOptions { mode: StatusSnapshot['mode']; lanIp: string | null; /** time source for rates and loss; tests pass the recording's clock */ now?: () => number }
 
 /** Guess the game from the datagram itself (used when the source port is ambiguous, e.g. replays of unknown captures). */
 export function sniffGame(data: Uint8Array, srcPort: number): GameId | null {
@@ -36,7 +36,11 @@ export class Engine {
   private frameTimes: number[] = [];
   private lastPacketT: number | null = null;
   private lastSeq: number | null = null;
-  private lost = 0; private got = 0;
+  /** rolling 10 s frame accounting: got/lost per frame step, robust to send rate and ignoring outages > 1 s */
+  private lossWin: { t: number; got: number; lost: number }[] = [];
+  private seqDeltas: number[] = [];
+  private lastFrameAt = 0;
+  gaps = 0;
   private statusTimer: NodeJS.Timeout | null = null;
   private tickTimer: NodeJS.Timeout | null = null;
   private detail = 'waiting for packets';
@@ -74,6 +78,7 @@ export class Engine {
   }
 
   get capturing(): boolean { return this.writer !== null; }
+  get captureCount(): number { return this.writer?.count ?? 0; }
 
   /** Feed one datagram. `t` is monotonic ms (live: now; replay: original capture time). */
   ingest(data: Uint8Array, srcPort: number, t: number, tWall = Date.now()): void {
@@ -84,12 +89,12 @@ export class Engine {
     if (this.game !== game) {
       this.game = game;
       this.adapters[game].reset();
-      this.lastSeq = null; this.lost = 0; this.got = 0;
+      this.lastSeq = null; this.lossWin = []; this.seqDeltas = [];
       this.detail = game === 'f1' ? 'F1 packets on port 20777' : 'GT7 packets on port 33740';
       this.bus.emit('event', { type: 'stream.found', t, detail: this.detail });
     }
     // statistics use the process clock so replays of old captures still show live rates
-    const now = performance.now();
+    const now = this.opts.now ? this.opts.now() : performance.now();
     this.packetTimes.push(now); this.lastPacketT = now;
     const out = this.adapters[game].feed(data, t);
     this.publish(out.frames, out.events, now);
@@ -99,15 +104,35 @@ export class Engine {
     for (const e of events) this.bus.emit('event', e);
     for (const f of frames) {
       this.frameTimes.push(t);
-      if (this.lastSeq !== null && f.seq > this.lastSeq + 1) this.lost += f.seq - this.lastSeq - 1;
-      this.got++;
-      this.lastSeq = f.seq;
+      let lost = 0;
+      if (this.lastSeq !== null && f.seq > this.lastSeq) {
+        const d = f.seq - this.lastSeq;
+        if (t - this.lastFrameAt > 1000) this.gaps++; // outage: reported by stream.lost/found, not counted as loss
+        else {
+          this.seqDeltas.push(d); if (this.seqDeltas.length > 121) this.seqDeltas.shift();
+          const step = [...this.seqDeltas].sort((a, b) => a - b)[Math.floor(this.seqDeltas.length / 2)]!;
+          if (d >= step * 1.5) lost = Math.round(d / step) - 1;
+        }
+      }
+      this.lossWin.push({ t, got: 1, lost });
+      this.lastSeq = f.seq; this.lastFrameAt = t;
       this.bus.emit('frame', f);
     }
   }
 
+  /** one line for the session log: enough to tell a network problem from an app problem */
+  diag(now: number, loopDelayMaxMs: number): string {
+    const s = this.status(now);
+    const f1 = this.adapters.f1 as F1Adapter;
+    const extra = this.game === 'f1' ? ` badLen=${f1.stats.badLength} unkFmt=${f1.stats.unknownFormat} ignored=${f1.stats.ignored}` : '';
+    return `diag game=${s.game} rx=${s.receiving ? 1 : 0} pkt/s=${s.packetsPerSec} fps=${s.framesPerSec} loss10s=${s.lossPct.toFixed(1)}% gaps=${this.gaps} loopMax=${loopDelayMaxMs.toFixed(0)}ms${extra}`;
+  }
+
   status(now: number): StatusSnapshot {
     const window = 1000;
+    this.lossWin = this.lossWin.filter((x) => now - x.t < 10000);
+    let got = 0, lost = 0;
+    for (const x of this.lossWin) { got += x.got; lost += x.lost; }
     this.packetTimes = this.packetTimes.filter((x) => now - x < window);
     this.frameTimes = this.frameTimes.filter((x) => now - x < window);
     const age = this.lastPacketT === null ? null : now - this.lastPacketT;
@@ -116,7 +141,7 @@ export class Engine {
     else if (this.game && receiving) this.detail = this.game === 'f1' ? `F1 format ${(this.adapters.f1 as F1Adapter).format ?? '?'}` : `GT7 format ${(this.adapters.gt7 as Gt7Adapter).capabilities.rawPedals ? '~/C' : 'A/B'}`;
     return {
       game: this.game, receiving, packetsPerSec: this.packetTimes.length, framesPerSec: this.frameTimes.length,
-      lastPacketAgeMs: age, lossPct: this.got + this.lost > 0 ? (100 * this.lost) / (this.got + this.lost) : 0,
+      lastPacketAgeMs: age, lossPct: got + lost > 0 ? (100 * lost) / (got + lost) : 0,
       detail: this.detail, mode: this.opts.mode, lanIp: this.opts.lanIp,
     };
   }

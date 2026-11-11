@@ -1,0 +1,20 @@
+import { readPwcap } from '../../src/capture/pwcap.ts';
+import { F1Adapter } from '../../src/adapters/f1/adapter.ts';
+import { SessionAnalyser } from '../../src/analysis/session.ts';
+const { records } = readPwcap(process.argv[2]!);
+const an = new SessionAnalyser(null); const ad = new F1Adapter();
+let frames = 0, lapNull = 0, onTrackNull = 0, offTrack = 0; const ev: string[] = [];
+const take = (o: ReturnType<F1Adapter['feed']>) => { for (const f of o.frames) { frames++; if (f.lap.number === null) lapNull++; if (f.flags.onTrack === null) onTrackNull++; if (f.flags.onTrack === false) offTrack++; an.onFrame(f); } for (const e of o.events) { an.onEvent(e); if (e.type === 'lap.complete' || e.type === 'flashback') ev.push(JSON.stringify(e)); } };
+for (const r of records) take(ad.feed(r.data, r.t));
+take(ad.tick(1e12));
+console.log('frames', frames, 'lapNull', lapNull, 'onTrackNull', onTrackNull, 'offTrack', offTrack);
+console.log('collector accepted', an.collector.accepted, 'skipped', JSON.stringify(an.collector.skipped), 'laps', an.collector.laps.length);
+for (const l of an.collector.laps) console.log(` lap ${l.number} ${l.timeMs} ms valid=${l.valid} gaps=${l.maxGapMs} ch=${l.ch ? 'yes' : 'no'}`);
+const m = an.model, u = an.lastUpdate;
+console.log('model', m ? `${m.id} ${Math.round(m.length)} m, ${m.corners.length} corners` : 'none');
+console.log('update', u ? `laps=${u.laps.length} pb=${u.pbMs} theoretical=${u.theoreticalMs} worst=${u.worstCorners.map((c) => 'T' + c.corner + ':' + c.deltaMs).join(',')}` : 'none');
+console.log(ev.join('\n'));
+const { buildDebrief } = await import('../../src/debrief/debrief.ts');
+const d = buildDebrief(an, null);
+console.log('DEBRIEF', d ? JSON.stringify({ track: d.trackName, laps: d.laps, headline: (d as any).headline, top3: (d as any).topCorners?.map((c: any) => c.name ?? c.corner), drill: (d as any).drill }).slice(0, 700) : 'null');
+if (d) { const { debriefHtml } = await import('../../src/debrief/debrief.ts'); const { writeFileSync, mkdirSync } = await import('node:fs'); mkdirSync('captures', { recursive: true }); writeFileSync('captures/shanghai-fp-debrief.html', debriefHtml(d)); console.log('wrote captures/shanghai-fp-debrief.html'); }

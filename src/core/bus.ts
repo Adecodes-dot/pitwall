@@ -2,6 +2,7 @@
 import type { AdapterEvent, NormalisedFrame, GameId } from './types.ts';
 import type { AnalysisUpdate } from '../analysis/session.ts';
 import type { SpokenCall } from '../radio/radio.ts';
+import type { VoiceEvent } from '../voice/voice.ts';
 
 export interface BusEvents {
   frame: NormalisedFrame;
@@ -14,6 +15,8 @@ export interface BusEvents {
   analysis: AnalysisUpdate & { svg: string | null };
   /** a radio call that started playing */
   radio: SpokenCall;
+  /** hands-free voice state, live transcript of addressed speech, answers, mic level */
+  voice: VoiceEvent;
   /** an audio clip for browser clients to play */
   audio: { id: number; wavBase64: string; durationS: number };
 }

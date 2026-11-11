@@ -28,9 +28,10 @@ describe('persona rules', () => {
     expect(checkCall(call('Brake 10 metres later.', 3, { metres: 10 })).ok).toBe(false);
   });
   it('reads lap times like an engineer', () => {
-    expect(sayLapTime(92456)).toBe('one thirty-two four');
-    expect(sayLapTime(65900)).toBe('one oh five nine');
-    expect(sayLapTime(120000)).toBe('two oh zero zero');
+    expect(sayLapTime(92456)).toBe('one thirty-two point four');
+    expect(sayLapTime(65900)).toBe('one oh five point nine');
+    expect(sayLapTime(90364)).toBe('one thirty point three'); // was "one thirty three", heard as 1:33 at Miami
+    expect(sayLapTime(120000)).toBe('two oh zero point zero');
   });
 });
 
@@ -176,10 +177,57 @@ describe('radio on replayed sessions', () => {
     }
   });
 
+  it('a corner pass that lost over 2 s (spin, off, contact) gets no coaching call', () => {
+    // Miami race, lap 17: a near-stop at T14 came out as "Turn 14, carry 140 more through the apex."
+    const { analyser } = runRadio('gt7');
+    const u = analyser.lastUpdate!;
+    const c0 = coachingCalls({ update: u, assists: { abs: false, tc: 0 }, max: 3 }, { now: 0, triggerT: 0 })[0]!.corner;
+    const incident = { ...u, worstCorners: u.worstCorners.map((w) => (w.corner === c0 ? { ...w, deltaMs: 4600 } : w)) };
+    const calls = coachingCalls({ update: incident, assists: { abs: false, tc: 0 }, max: 3 }, { now: 0, triggerT: 0 });
+    expect(calls.some((c) => c.corner === c0)).toBe(false);
+  });
+
   it('with ABS on, no "locking" calls are produced', () => {
     const { analyser } = runRadio('f1');
     const u = analyser.lastUpdate!;
     const withAbs = coachingCalls({ update: u, assists: { abs: true, tc: 1 }, max: 10 }, { now: 0, triggerT: 0 });
     expect(withAbs.every((c) => !/locking/.test(c.text))).toBe(true);
+  });
+});
+
+describe('replies to the driver with no live data (menus, garage)', () => {
+  const rig = () => {
+    const bus = new Bus(); let clock = 1000; const sink = new NullSink(); const said: string[] = [];
+    bus.on('radio', (e) => said.push(`${e.text}|${e.zone}`));
+    const radio = new Radio(bus, new SessionAnalyser(), { mode: 'normal', tts: null, sinks: [sink], now: () => clock });
+    radio.attach();
+    return { radio, sink, said, later: (ms: number) => { clock += ms; radio.tick(clock); } };
+  };
+  // one frame of a car sitting in the garage: the game is on, nothing is moving
+  const garageFrame = () => {
+    const recs = synthRecords(generateSession(defaultTrack(), 1, { seed: 13 }), 'f1', { format: 2025 });
+    const a = new F1Adapter();
+    for (const r of recs) { const f = a.feed(r.data, r.t).frames[0]; if (f) return { ...f, flags: { ...f.flags, onTrack: false } }; }
+    throw new Error('no frame');
+  };
+  it('"radio check" and "Say again?" are spoken, not just shown as text', async () => {
+    const { radio, sink, said, later } = rig();
+    radio.onFrame(garageFrame());
+    await radio.ask('radio check', { voice: true });
+    later(5000); // the first reply has finished
+    await radio.ask('purple monkey dishwasher', { voice: true });
+    later(0);
+    expect(sink.played.length).toBe(2);
+    expect(said).toEqual(['Loud and clear.|unknown', 'Say again?|unknown']);
+  });
+  it('with no game sending, an unclear phrase is room audio: no "Say again?"; a radio check is still answered', async () => {
+    // 2026-11-08: the idle app said "Say again?" 7 times to songs with "at last" in them
+    const { radio, sink, said, later } = rig();
+    await radio.ask('i cant see a girl all its own', { voice: true });
+    later(5000);
+    await radio.ask('radio check', { voice: true });
+    later(0);
+    expect(said).toEqual(['Loud and clear.|unknown']);
+    expect(sink.played.length).toBe(1);
   });
 });

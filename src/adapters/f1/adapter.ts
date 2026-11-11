@@ -1,5 +1,6 @@
 // F1 25 adapter: assembles one NormalisedFrame per game frame from the packets that share a frameIdentifier.
-// Emits on Motion Ex (the last menu-rate packet of a frame) or when the next frame begins.
+// A frame is emitted when the next frame begins (or on tick). The game's packet order within a frame is not fixed:
+// the real 2026 game sends LapData, Motion, MotionEx, CarTelemetry, CarStatus, CarTelemetry2, so no single packet marks the end.
 import type { Adapter, AdapterOutput } from '../adapter.ts';
 import type { AdapterEvent, Capabilities, FiaFlag, NormalisedFrame, SafetyCar, Wheel4 } from '../../core/types.ts';
 import { emptyFrame } from '../../core/types.ts';
@@ -63,7 +64,9 @@ export class F1Adapter implements Adapter {
       if (this.format !== null) events.push({ type: 'format.change', t, from: String(this.format), to: String(h.packetFormat) });
       this.format = h.packetFormat as F1Format;
     }
-    if (this.sessionUID !== h.sessionUID) {
+    // sessionUID 0 is the menus between sessions, not a session: ignoring it keeps the last session's analysis on screen
+    // and lets the same session resume after a trip to the menu
+    if (h.sessionUID !== 0n && this.sessionUID !== h.sessionUID) {
       if (this.sessionUID !== null) { this.flush(frames); this.prevLapNum = null; this.status = null; this.damage = null; }
       this.sessionUID = h.sessionUID;
       events.push({ type: 'session.start', t, sessionUid: h.sessionUID.toString() });
@@ -110,7 +113,7 @@ export class F1Adapter implements Adapter {
         break;
       }
       case 'carDamage': this.damage = d.car; break;
-      case 'motionEx': this.pending!.motionEx = d.data; this.flush(frames); break;
+      case 'motionEx': this.pending!.motionEx = d.data; break;
       case 'carTelemetry2': this.pending!.ct2 = d.car; break;
       case 'event': {
         const dv = d.details;
@@ -171,12 +174,15 @@ export class F1Adapter implements Adapter {
       wear: dm ? reorder(arr(dm.tyresWear)) : null,
       surface: reorder(arr(tel.surfaceType)).map(String) as Wheel4<string>,
     };
-    fr.fuel = st ? { level: n(st.fuelInTank), capacity: n(st.fuelCapacity), lapsRemaining: n(st.fuelRemainingLaps) } : { level: null, capacity: null, lapsRemaining: null };
+    // F1 sends the figure from the in-car fuel display: laps of fuel beyond the finish (+2.9 = almost three spare), not laps
+    // of fuel left. Laps left = that margin + race distance still to run; outside a race there is no finish to measure against.
+    const toGo = lap && s.totalLaps && s.sessionType?.startsWith('race') ? s.totalLaps - n(lap.currentLapNum) + 1 - (s.trackLength ? Math.max(0, n(lap.lapDistance)) / s.trackLength : 0) : null;
+    fr.fuel = st ? { level: n(st.fuelInTank), capacity: n(st.fuelCapacity), lapsRemaining: toGo !== null ? n(st.fuelRemainingLaps) + toGo : null } : { level: null, capacity: null, lapsRemaining: null };
     const fia = st ? (FIA[n(st.vehicleFiaFlags)] ?? null) : null;
     fr.flags = {
       fia: this.redFlag ? 'red' : fia,
       safetyCar: s.safetyCar,
-      onTrack: lap ? n(lap.driverStatus) !== 0 && n(lap.resultStatus) >= 2 : null,
+      onTrack: lap ? (n(lap.driverStatus) !== 0 && n(lap.resultStatus) >= 2) || n(tel.speed) > 30 : null,
       paused: st ? n(st.networkPaused) === 1 : null,
       pitting: lap ? n(lap.pitStatus) !== 0 : null,
     };

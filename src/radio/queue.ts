@@ -31,6 +31,9 @@ export const LIMITS: Record<Chattiness, QueueLimits> = {
   coach: { coachingPerLap: 4, totalPerLap: 6, coachingEveryNLaps: 1, cornerCooldownLaps: 2 },
 };
 
+/** Answers and confirmations to something the driver just said. They are never unsolicited. */
+export const isReply = (c: Call): boolean => /^(qa|say|repeat|voice):/.test(c.key);
+
 export class RadioQueue {
   mode: Chattiness = 'normal';
   private immediate: Call[] = [];
@@ -59,7 +62,7 @@ export class RadioQueue {
       if (last !== undefined && this.lap - last < this.limits.cornerCooldownLaps) return false;
     }
     list.push(call);
-    list.sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt);
+    list.sort((a, b) => a.priority - b.priority || Number(isReply(b)) - Number(isReply(a)) || a.createdAt - b.createdAt); // the driver asked: answer first
     return true;
   }
 

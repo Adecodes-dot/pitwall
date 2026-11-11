@@ -14,13 +14,18 @@ export interface Settings {
   gt7Format: Gt7Format;
   gt7Assists: { tcs: number | null; asm: boolean | null; abs: 'off' | 'weak' | 'default' | 'strong' | null; countersteer: boolean | null };
   llm: boolean;                       // use cloud phrasing when credentials exist
+  voiceEnabled: boolean;              // hands-free listening (needs the speech model and a mic page open)
+  /** what the driver calls their engineer: the wake word ("Bono", "GP", "Will Joseph") */
+  engineerName: string;
+  /** extra wake phrases learned by teaching the name (how the recogniser writes it for this driver) */
+  wakeAliases: string[];
   recordSessions: boolean;            // write .pwcap for every live session
   crashLogs: boolean;
 }
 
 export const DEFAULTS: Settings = {
   firstRunDone: false, game: null, mode: 'normal', muted: false, deviceAudio: true, voice: 'vits-piper-en_GB-alba-medium', units: 'metric',
-  gt7Format: '~', gt7Assists: { tcs: null, asm: null, abs: null, countersteer: null }, llm: true, recordSessions: false, crashLogs: true,
+  gt7Format: '~', gt7Assists: { tcs: null, asm: null, abs: null, countersteer: null }, llm: true, voiceEnabled: true, engineerName: 'engineer', wakeAliases: [], recordSessions: true, crashLogs: true,
 };
 
 export class SettingsStore {
@@ -42,7 +47,9 @@ export class SettingsStore {
       if (!(k in DEFAULTS)) continue;
       const def = (DEFAULTS as unknown as Record<string, unknown>)[k];
       let val: unknown = v;
-      if (typeof def === 'boolean') val = Boolean(v);
+      if (Array.isArray(def)) { if (!Array.isArray(v)) continue; val = v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim().toLowerCase().slice(0, 40)).slice(0, 16); }
+      else if (k === 'engineerName') { val = String(v).trim().slice(0, 40); if (!val) continue; }
+      else if (typeof def === 'boolean') val = Boolean(v);
       else if (typeof def === 'string' && typeof v !== 'string') continue;
       else if (k === 'gt7Assists' && typeof v === 'object' && v) val = { ...this.cache.gt7Assists, ...(v as object) };
       (this.cache as unknown as Record<string, unknown>)[k] = val;

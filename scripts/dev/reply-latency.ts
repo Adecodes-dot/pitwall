@@ -1,0 +1,30 @@
+import { readPwcap } from '../../src/capture/pwcap.ts';
+import { F1Adapter } from '../../src/adapters/f1/adapter.ts';
+import { SessionAnalyser } from '../../src/analysis/session.ts';
+import { Bus } from '../../src/core/bus.ts';
+import { Radio } from '../../src/radio/radio.ts';
+import { NullSink } from '../../src/radio/audio.ts';
+const { records } = readPwcap(process.argv[2]!);
+const bus = new Bus(); const an = new SessionAnalyser(process.argv[4] ? new (await import('../../src/analysis/store.ts')).Store(process.argv[4]) : null);
+an.listeners.push((u) => bus.emit('analysis', { ...u, svg: null }));
+let clock = 0; const radio = new Radio(bus, an, { mode: 'coach', tts: null, sinks: [new NullSink()], now: () => clock }); const saved: any[] = []; bus.on('event', (e) => { if (e.type === 'session.start') saved.push(...(radio as any).transcript); }); radio.attach();
+const ad = new F1Adapter();
+const asks: { at: number; q: string; spoken: number | null; text?: string; zone?: string }[] = [];
+const pending: typeof asks = [];
+let nextAsk = 0; const Q = ['radio check', 'what was my last lap', 'how are the tyres', 'where am I losing time'];
+let qi = 0; let lastFrameT = 0; let driving = 0;
+const handle = async (o: ReturnType<F1Adapter['feed']>) => { for (const f of o.frames) { clock = f.t; lastFrameT = f.t; if (f.flags.onTrack) driving++; bus.emit('frame', f); an.onFrame(f); if (f.flags.onTrack && f.t > nextAsk && driving > 600) { const a = { at: f.t, q: Q[qi++ % Q.length]!, spoken: null as number | null }; asks.push(a); pending.push(a); await radio.ask(a.q, { voice: true }); nextAsk = f.t + Number(process.argv[3] ?? 12000); } } for (const e of o.events) { bus.emit('event', e); an.onEvent(e); } };
+for (const r of records) { clock = r.t; await handle(ad.feed(r.data, r.t)); }
+for (const e of [...saved, ...((radio as any).transcript as any[])]) { const p = pending.find((x) => e.key === 'qa:' + x.at); if (p) { p.spoken = e.t.chosen; p.text = e.text; p.zone = e.zone; } }
+const done = asks.filter((a) => a.spoken !== null), waits = done.map((a) => a.spoken! - a.at).sort((a, b) => a - b);
+console.log(`asked ${asks.length}, spoken ${done.length}, never spoken ${asks.length - done.length}`);
+console.log('wait ms: median', waits[Math.floor(waits.length / 2)], 'p90', waits[Math.floor(waits.length * 0.9)], 'max', waits[waits.length - 1]);
+const zones: Record<string, number> = {}; for (const a of done) zones[a.zone ?? '?'] = (zones[a.zone ?? '?'] ?? 0) + 1; console.log('zones', JSON.stringify(zones));
+console.log(asks.slice(0, 8).map((a) => `${(a.at / 1000).toFixed(0)}s "${a.q}" → ${a.spoken === null ? 'NOT SPOKEN' : `+${Math.round(a.spoken - a.at)} ms ${a.zone}: ${a.text}`}`).join('\n'));
+const R = radio as any;
+console.log('zones', R.zones ? `L=${Math.round(R.zones.L)} safeRanges=${R.zones.safeRanges.length}` : 'null', 's', R.s, 'quiet', R.quietReason(clock), 'lastFrameWallAge', performance.now() - R.lastFrameWall, 'dropped', R.dropped.length, R.dropped.slice(0, 3).map((d: any) => d.why));
+const tr = (radio as any).transcript as any[];
+console.log('transcript', tr.length, tr.slice(0, 6).map((e) => `${Math.round(e.t.chosen / 1000)}s [${e.zone}] ${e.key} ${e.text}`).join(' | '));
+console.log('queue', JSON.stringify(Object.keys((radio as any).queue)), 'playing', !!(radio as any).playing, 'prepared', (radio as any).prepared.size);
+const z = (radio as any).zones; let safeM = 0; for (let i = 0; i < z.L; i++) safeM += z.safe[i];
+console.log(`safe road ${Math.round(100 * safeM / z.L)}% of lap; ranges (start m, length m):`, z.safeRanges.map((r: any) => `${Math.round(r.s0)}+${Math.round(r.s1 - r.s0)}`).join(' '));

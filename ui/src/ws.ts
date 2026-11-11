@@ -4,6 +4,7 @@ import type { NormalisedFrame, AdapterEvent } from '../../src/core/types.ts';
 import type { StatusSnapshot } from '../../src/core/bus.ts';
 import type { AnalysisPayload } from './Analysis.tsx';
 import type { SpokenCall } from '../../src/radio/radio.ts';
+import type { VoiceEvent, CalibrationResult } from '../../src/voice/voice.ts';
 
 export interface LapRow { lapNumber: number; timeMs: number; valid: boolean | null; t: number }
 
@@ -18,6 +19,12 @@ export interface Live {
   radio: SpokenCall[];
   audio: { id: number; wavBase64: string; durationS: number } | null;
   lastAnswer: string | null;
+  /** latest hands-free voice event (state, partial transcript) and the last addressed utterance with its answer */
+  voice: VoiceEvent | null;
+  /** progress and result of teaching the engineer's name (kept apart from `voice`, which is replaced by mic-level events) */
+  calibration: { count: number; want: number; heard: string[]; done?: CalibrationResult } | null;
+  heard: { text: string; intent: string | null; answer?: string; at: number } | null;
+  sendBinary: (buf: ArrayBuffer) => void;
   send: (cmd: string, args?: Record<string, unknown>) => void;
 }
 
@@ -31,6 +38,9 @@ export function useLive(): Live {
   const [radio, setRadio] = useState<SpokenCall[]>([]);
   const [audio, setAudio] = useState<Live['audio']>(null);
   const [lastAnswer, setLastAnswer] = useState<string | null>(null);
+  const [voice, setVoice] = useState<VoiceEvent | null>(null);
+  const [calibration, setCalibration] = useState<Live['calibration']>(null);
+  const [heard, setHeard] = useState<Live['heard']>(null);
   const history = useRef<Live['history']>([]);
   const ws = useRef<WebSocket | null>(null);
 
@@ -55,7 +65,8 @@ export function useLive(): Live {
         } else if (m.ch === 'event') {
           const e = m.payload as AdapterEvent;
           if (e.type === 'lap.complete') setLaps((l) => [...l, { lapNumber: e.lapNumber, timeMs: e.timeMs, valid: e.valid, t: e.t }].slice(-50));
-          if (e.type === 'session.start') { setLaps([]); history.current = []; setAnalysis(null); setRadio([]); }
+          // the server sends the track map again for the new session; the radio list stays so the driver can read what was said
+          if (e.type === 'session.start') { setLaps([]); history.current = []; }
           setLog((l) => [...l, `${new Date().toLocaleTimeString()}  ${e.type}${'detail' in e ? ' ' + e.detail : ''}${'lapNumber' in e ? ` L${e.lapNumber} ${fmtTime(e.timeMs)}` : ''}`].slice(-100));
         } else if (m.ch === 'analysis') {
           setAnalysis(m.payload as AnalysisPayload);
@@ -63,6 +74,11 @@ export function useLive(): Live {
           const c = m.payload as SpokenCall;
           setRadio((r) => [...r, c].slice(-100));
           setLog((l) => [...l, `${new Date().toLocaleTimeString()}  radio: ${c.text}`].slice(-100));
+        } else if (m.ch === 'voice') {
+          const e = m.payload as VoiceEvent;
+          setVoice(e);
+          if (e.calibration) setCalibration(e.calibration);
+          if (e.heard) setHeard({ text: e.heard, intent: e.intent ?? null, ...(e.answer ? { answer: e.answer } : {}), at: Date.now() });
         } else if (m.ch === 'reply') {
           const p = m.payload as { answer?: { text: string } };
           if (p?.answer) setLastAnswer(p.answer.text);
@@ -79,7 +95,8 @@ export function useLive(): Live {
   }, []);
 
   return {
-    connected, status, frame, laps, log, history: history.current, analysis, radio, audio, lastAnswer,
+    connected, status, frame, laps, log, history: history.current, analysis, radio, audio, lastAnswer, voice, heard, calibration,
+    sendBinary: (buf) => { const s = ws.current; if (s && s.readyState === WebSocket.OPEN && s.bufferedAmount < 1_000_000) s.send(buf); },
     send: (cmd, args = {}) => ws.current?.send(JSON.stringify({ cmd, args })),
   };
 }

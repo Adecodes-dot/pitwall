@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import type { Live } from './ws.ts';
+import type { MicState } from './mic.ts';
+import { VoiceCard } from './Voice.tsx';
+import { NameCard } from './Name.tsx';
 import type { Settings } from '../../src/server/settings.ts';
 
-type Step = 'game' | 'ingame' | 'receive' | 'audio' | 'assists' | 'done';
-const ORDER: Step[] = ['game', 'ingame', 'receive', 'audio', 'assists', 'done'];
+type Step = 'game' | 'ingame' | 'receive' | 'audio' | 'voice' | 'assists' | 'done';
+const ORDER: Step[] = ['game', 'ingame', 'receive', 'audio', 'voice', 'assists', 'done'];
 
-export interface SettingsInfo { settings: Settings; restartNeeded: boolean; voices: string[]; llmCredentials: boolean; ttsLoaded: boolean; deviceSink: boolean; version: string; logsDir: string; dbPath: string }
+export interface SettingsInfo { settings: Settings; restartNeeded: boolean; voiceAvailable: boolean; voices: string[]; llmCredentials: boolean; ttsLoaded: boolean; deviceSink: boolean; version: string; logsDir: string; dbPath: string }
 
 export function useSettings(): { info: SettingsInfo | null; update: (patch: Partial<Settings>) => Promise<void>; reload: () => void } {
   const [info, setInfo] = useState<SettingsInfo | null>(null);
@@ -19,7 +22,7 @@ export function useSettings(): { info: SettingsInfo | null; update: (patch: Part
 }
 
 /** First-run wizard. Also reachable any time from the Setup tab. */
-export function SetupWizard({ live, settings, onDone }: { live: Live; settings: ReturnType<typeof useSettings>; onDone: () => void }) {
+export function SetupWizard({ live, settings, mic, onDone }: { live: Live; settings: ReturnType<typeof useSettings>; mic: MicState; onDone: () => void }) {
   const s = settings.info?.settings;
   const [step, setStep] = useState<Step>('game');
   const [game, setGame] = useState<'f1' | 'gt7' | null>(s?.game ?? null);
@@ -99,9 +102,18 @@ export function SetupWizard({ live, settings, onDone }: { live: Live; settings: 
           <Nav />
         </div>
       )}
+      {step === 'voice' && (
+        <div className="card">
+          <h2>Step 5 · Talk to the engineer (optional)</h2>
+          <p>Hands on the wheel? Give your engineer a name, turn the microphone on, and just talk: <b>“{settings.info?.settings.engineerName ?? 'Engineer'}, how's my fuel?”</b></p>
+          <VoiceCard live={live} mic={mic} available={settings.info?.voiceAvailable ?? false} wakeWord={settings.info?.settings.engineerName ?? 'engineer'} />
+          <div style={{ marginTop: 14 }}><NameCard live={live} settings={settings} mic={mic} /></div>
+          <Nav nextLabel={mic.on ? 'Next' : 'Skip'} />
+        </div>
+      )}
       {step === 'assists' && (
         <div className="card">
-          <h2>Step 5 · Assists</h2>
+          <h2>Step 6 · Assists</h2>
           {game === 'f1' ? <p>F1 25 sends your assist settings; nothing to enter. Coaching adapts automatically (ABS on: no "locking" calls; traction control on: throttle timing, not modulation).</p> : (
             <>
               <p className="muted">GT7 does not send assist levels. Set what you use so the coaching matches.</p>
@@ -134,7 +146,7 @@ function WizardNav({ back, next, first, nextLabel = 'Next', canNext = true }: { 
   );
 }
 
-export function SettingsView({ settings }: { settings: ReturnType<typeof useSettings> }) {
+export function SettingsView({ settings, live, mic }: { settings: ReturnType<typeof useSettings>; live: Live; mic: MicState }) {
   const info = settings.info;
   const [logs, setLogs] = useState<string[] | null>(null);
   if (!info) return <main><div className="card"><span className="na">loading settings…</span></div></main>;
@@ -150,6 +162,8 @@ export function SettingsView({ settings }: { settings: ReturnType<typeof useSett
         <div className="kv"><span>Chattiness</span><span className="row" style={{ gap: 6 }}>{(['quiet', 'normal', 'coach'] as const).map((m) => <button key={m} className={s.mode === m ? 'primary' : ''} onClick={() => settings.update({ mode: m })}>{m}</button>)}</span></div>
         <Toggle k="muted" label="Mute the radio" />
         <div className="kv"><span>Voice</span><select value={s.voice} onChange={(e) => settings.update({ voice: e.target.value })}>{(info.voices.length ? info.voices : [s.voice]).map((v) => <option key={v} value={v}>{v.replace(/^vits-piper-/, '')}</option>)}</select></div>
+        <Toggle k="voiceEnabled" label="Hands-free voice" hint="Wake word + spoken questions, understood offline on this laptop" />
+        <div style={{ padding: '8px 0' }}><NameCard live={live} settings={settings} mic={mic} /></div>
         <Toggle k="llm" label="Cloud phrasing" hint={info.llmCredentials ? 'Rephrases coaching lines; never on the live safety path. Facts are checked before speaking.' : 'No API key found. Set ANTHROPIC_API_KEY and restart to enable.'} />
       </div>
       <div className="card">

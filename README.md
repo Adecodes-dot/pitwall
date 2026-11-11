@@ -34,7 +34,19 @@ Open the dashboard on your phone at the address shown in the wizard (for example
 - **Never mid-corner.** Calls only start on straights, after your first flying lap teaches Pit Wall the track.
 - Chattiness: **Quiet** (safety and fuel only), **Normal** (up to two calls a lap), **Coach** (lap times and up to four calls a lap).
 
-Ask it things on the Radio tab, by voice or by typing: "how's my fuel", "where am I losing time", "what's my best", "how are the tyres".
+### Talking to it hands-free
+Turn the microphone on once (Radio tab → "Turn on microphone", or wizard step 5). From then on, hands on the wheel:
+
+- Say the wake word, then ask in your own words: **"Engineer, how's my fuel?"**, "Hey engineer, where am I losing time?", "How are the tyres, engineer?", "Engineer, what was my last lap?", "how many laps to go".
+- There are no fixed commands. It listens for what you mean (fuel, tyres, lap times, where you lose time, position, laps left, flags, consistency) however you phrase it, and tolerates the usual mis-hearings.
+- Right after an answer you can follow up without the wake word ("and the tyres?"). Anything else you say, including the TV and your friends, is ignored and not kept.
+- Change how chatty it is by voice: "Engineer, talk less" (Quiet), "talk more" or "more feedback" (Coach), "back to normal". "Engineer, say that again" repeats the last call. "Engineer, mute" silences it until you say "Engineer, talk to me".
+- It beeps the moment it hears the wake word, never listens while it is speaking itself, and says **"Say again?"** when it did not understand rather than guessing.
+- **Name your engineer.** In the setup wizard or Settings, type what you would call them (Bono, GP, Will Joseph, anything), press **Teach it my name** and say it five times. Pit Wall learns how it hears your voice and tells you how reliable the name is. Two or three syllables work best; very short names like GP are easy to mishear. The default is "engineer".
+
+Everything is understood on your laptop, offline. The page needs the microphone: the Pit Wall app has it; in a browser use `http://localhost:8787` on the laptop (browsers block the microphone on a plain LAN address, so a phone cannot be the microphone yet). A headset mic on the laptop, or the laptop close to you, works best; a wired earbud keeps the engineer's voice out of the microphone.
+
+You can also type questions on the Radio tab.
 
 ## After the session
 The Debrief tab shows your best and theoretical lap, a consistency score, the three corners costing you the most time (with your trace against your best), one instruction per corner, and a drill for next session. Export it as a web page or JSON.
@@ -45,6 +57,10 @@ The Debrief tab shows your best and theoretical lap, a consistency score, the th
 **I hear nothing.** Check the laptop's output device and volume. Press "Radio check" in Setup. Or on the Radio tab enable "Play calls here" to use the phone.
 
 **The engineer is quiet.** It needs one clean lap to learn the track. It also goes quiet on purpose when data is missing or you are off track. In Normal mode it only speaks when a corner is more than 0.12 s slower than your best.
+
+**Packets drop or the connection cuts out mid-session.** Pit Wall shows loss over the last 10 seconds. Wi-Fi is the usual cause: F1 at 60 Hz is about 3 Mbit/s of small packets, and a busy or weak 5 GHz link, or a mobile-network router (MTN/other 5G boxes), will drop them. Best fix: put the PS5 and the laptop on Ethernet. Otherwise move closer, use the same band for both, or lower UDP Send Rate to 30 Hz (the engineer keeps working). A lap with a gap in it keeps its time but is not used as a reference.
+
+**The microphone does not work.** Turn it on in the Pit Wall app (Radio tab). In a browser, use `http://localhost:8787` on the laptop, not the LAN address. Check Windows Settings → Privacy → Microphone allows desktop apps. If it hears you but misunderstands, say the wake word clearly, then pause a beat.
 
 **Bluetooth earbuds speak late.** Built-in Bluetooth adds 150–300 ms. A wired earbud or an aptX Low Latency USB transmitter fixes it.
 

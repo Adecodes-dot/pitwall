@@ -4,6 +4,7 @@ import 'uplot/dist/uPlot.min.css';
 import { useLive, fmtTime, type Live } from './ws.ts';
 import { AnalysisView } from './Analysis.tsx';
 import { RadioView, useBrowserAudio, type Mode } from './Radio.tsx';
+import { useMic } from './mic.ts';
 import { DebriefView } from './Debrief.tsx';
 import { SetupWizard, SettingsView, useSettings } from './Setup.tsx';
 
@@ -21,7 +22,12 @@ export function App() {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const browserAudio = useBrowserAudio(live, audioEnabled);
   const settings = useSettings();
+  const mic = useMic(live);
+  const voiceAvailable = settings.info?.voiceAvailable ?? false;
   const units = settings.info?.settings.units ?? 'metric';
+  // the radio mode lives in settings; a voice command ("talk less", "coach me") changes it on the server, so read it back
+  useEffect(() => { const m = settings.info?.settings.mode; if (m) setMode(m as Mode); }, [settings.info?.settings.mode]);
+  useEffect(() => { if (live.heard?.intent?.startsWith('mode-')) setTimeout(settings.reload, 300); }, [live.heard?.at]);
   // first run: stay on the wizard until it is finished
   useEffect(() => { if (settings.info && !settings.info.settings.firstRunDone && !tabFromHash()) setTabState('setup'); }, [settings.info?.settings.firstRunDone]);
   useEffect(() => {
@@ -29,15 +35,15 @@ export function App() {
   }, [live.status?.receiving]);
   return (
     <div className="app">
-      <Strip live={live} />
+      <Strip live={live} micOn={mic.on} />
       {live.radio.length > 0 && <div className="radio-line"><span className="dot" />{live.radio[live.radio.length - 1]!.text}</div>}
       <nav className="tabs">
         {TABS.map((t) => <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t[0]!.toUpperCase() + t.slice(1)}</button>)}
       </nav>
-      {tab === 'setup' && <SetupWizard live={live} settings={settings} onDone={() => setTab('live')} />}
-      {tab === 'settings' && <SettingsView settings={settings} />}
+      {tab === 'setup' && <SetupWizard live={live} settings={settings} mic={mic} onDone={() => setTab('live')} />}
+      {tab === 'settings' && <SettingsView settings={settings} live={live} mic={mic} />}
       {tab === 'live' && <LiveView live={live} units={units} />}
-      {tab === 'radio' && <RadioView live={live} mode={mode} setMode={setMode} audio={{ ...browserAudio, enabled: audioEnabled, setEnabled: setAudioEnabled }} />}
+      {tab === 'radio' && <RadioView live={live} mode={mode} setMode={(m) => { setMode(m); setTimeout(settings.reload, 300); }} mic={mic} voiceAvailable={voiceAvailable} wakeWord={settings.info?.settings.engineerName ?? 'engineer'} audio={{ ...browserAudio, enabled: audioEnabled, setEnabled: setAudioEnabled }} />}
       {tab === 'analysis' && <AnalysisView a={live.analysis} />}
       {tab === 'debrief' && <DebriefView live={live} />}
       {tab === 'log' && <main><div className="card"><h2>Events and log</h2><div className="log">{live.log.join('\n') || 'nothing yet'}</div></div></main>}
@@ -45,7 +51,7 @@ export function App() {
   );
 }
 
-function Strip({ live }: { live: Live }) {
+function Strip({ live, micOn }: { live: Live; micOn: boolean }) {
   const s = live.status;
   const light = !live.connected ? '' : s?.receiving ? 'on' : s?.game ? 'warn' : '';
   return (
@@ -54,6 +60,7 @@ function Strip({ live }: { live: Live }) {
       <strong>Pit Wall</strong>
       <span className="muted">{!live.connected ? 'connecting to companion…' : s?.receiving ? `${(s.game ?? '').toUpperCase()} · ${s.detail}` : s?.game ? s.detail : 'waiting for packets'}</span>
       <span className="spacer" />
+      {micOn && <span className="muted" title="hands-free voice is listening">mic on</span>}
       {s && <span className="muted num">{s.packetsPerSec} pkt/s · {s.framesPerSec} fps{s.lossPct > 0.5 ? ` · loss ${s.lossPct.toFixed(1)}%` : ''}</span>}
       {s?.mode && s.mode !== 'live' && <span className="chip">{s.mode}</span>}
     </header>

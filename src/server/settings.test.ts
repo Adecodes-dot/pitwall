@@ -22,6 +22,18 @@ describe('settings store', () => {
     expect(again.get().mode).toBe('coach');
     expect(again.get().gt7Assists.tcs).toBe(2);
   });
+  it('engineer name: trimmed, persisted, blank ignored; aliases can be cleared', () => {
+    const s = new SettingsStore(new DatabaseSync(':memory:'));
+    s.update({ engineerName: '  Will Joseph ', wakeAliases: ['will joe', 'wil joseph'] });
+    expect(s.get().engineerName).toBe('Will Joseph');
+    expect(s.get().wakeAliases).toEqual(['will joe', 'wil joseph']);
+    s.update({ engineerName: '   ' });
+    expect(s.get().engineerName).toBe('Will Joseph');
+    s.update({ engineerName: 'Bono', wakeAliases: [] });
+    expect(s.get().engineerName).toBe('Bono');
+    expect(s.get().wakeAliases).toEqual([]);
+    expect(s.get().engineerName.length).toBeLessThanOrEqual(40);
+  });
 });
 
 describe('crash reporter', () => {

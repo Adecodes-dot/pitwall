@@ -84,8 +84,9 @@ export function canStartCall(z: ZoneMap | null, s: number | null, speed: number 
 export class StraightHeuristic {
   private sinceMs = 0;
   private lastT: number | null = null;
-  update(t: number, throttle: number | null, brake: number | null, steer: number | null): void {
-    const ok = (brake ?? 1) < 0.02 && (throttle ?? 0) > 0.8 && Math.abs(steer ?? 1) < 0.12;
+  update(t: number, throttle: number | null, brake: number | null, steer: number | null, slow = false): void {
+    // behind the safety car or below 145 km/h nobody is flat out on a straight: off the brake and wheel straight is enough
+    const ok = (brake ?? 1) < 0.02 && ((throttle ?? 0) > 0.8 || slow) && Math.abs(steer ?? 1) < 0.12;
     if (this.lastT === null) this.lastT = t;
     this.sinceMs = ok ? this.sinceMs + (t - this.lastT) : 0;
     this.lastT = t;

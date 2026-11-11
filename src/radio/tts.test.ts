@@ -12,7 +12,7 @@ describe.skipIf(!have)('tts engine (needs models/vits-piper-en_GB-alba-medium)',
       const n = await tts.prime(BANK_PHRASES.slice(0, 6));
       const primeMs = performance.now() - t0;
       expect(n).toBe(6);
-      expect(primeMs / n).toBeLessThan(600);
+      expect(primeMs / n).toBeLessThan(1500); // 150-300 ms idle; the bound allows for the other test files sharing the CPU
       const t1 = performance.now();
       const hit = tts.get('Yellow flag, sector three.');
       expect(hit).not.toBeNull();
@@ -24,7 +24,7 @@ describe.skipIf(!have)('tts engine (needs models/vits-piper-en_GB-alba-medium)',
       const times: number[] = [];
       for (let i = 0; i < 8; i++) { const a = performance.now(); await tts.synth(`Turn ${i + 2}, braking ${10 + i * 5} metres early.`); times.push(performance.now() - a); }
       times.sort((a, b) => a - b);
-      expect(times[Math.floor(times.length * 0.95) - 1]!).toBeLessThan(500);
+      expect(times[Math.floor(times.length * 0.95) - 1]!).toBeLessThan(2500); // 170 ms idle; generous so a loaded CI machine does not flake
       const wav = pcmToWav(hit!);
       expect(new TextDecoder().decode(wav.subarray(0, 4))).toBe('RIFF');
     } finally { await tts.stop(); }

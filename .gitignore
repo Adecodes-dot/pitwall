@@ -12,3 +12,6 @@ models/*.tar.bz2
 node_modules/
 playwright-report/
 test-results/
+captures/
+# one-off scripts that applied code edits during development
+scripts/dev/patch-*.cjs

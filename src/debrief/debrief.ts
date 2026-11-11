@@ -4,7 +4,7 @@ import type { SessionAnalyser } from '../analysis/session.ts';
 import type { Store } from '../analysis/store.ts';
 import type { Corner } from '../analysis/track.ts';
 import { cornerMetrics, personalBest, segmentDeltas, segments, type Lap, type CornerMetrics } from '../analysis/laps.ts';
-import { diagnoseCorner, type Diagnosis } from '../radio/calls.ts';
+import { diagnoseCorner, INCIDENT_MS, type Diagnosis } from '../radio/calls.ts';
 
 export interface Trace { s: number[]; speed: number[]; throttle: number[]; brake: number[] }
 
@@ -26,13 +26,15 @@ export interface Debrief {
   game: 'f1' | 'gt7' | null;
   trackId: string | null; trackName: string | null; trackLength: number | null; cornerCount: number;
   laps: number; validLaps: number;
+  /** this is the session before the current one, which has no completed lap yet */
+  previousSession: boolean;
   bestMs: number | null; bestLap: number | null; theoreticalMs: number | null; allTimeBestMs: number | null;
   consistencyScore: number | null; lapTimeStdMs: number | null;
   assists: { tc: number | null; abs: boolean | null };
   mistakes: { lockups: number; wheelspins: number };
   topCorners: CornerDebrief[];
   drill: { corner: number; text: string; target: string } | null;
-  progress: { session: number; startedAt: string; bestMs: number | null; theoreticalMs: number | null; consistency: number | null; laps: number }[];
+  progress: { session: number; sessionType: string | null; startedAt: string; bestMs: number | null; theoreticalMs: number | null; consistency: number | null; laps: number }[];
   /** deterministic engineer summary (template); an LLM may rephrase it elsewhere */
   summary: string;
   lapTable: { number: number; timeMs: number; valid: boolean | null; deltaToPbMs: number | null }[];
@@ -50,9 +52,12 @@ function trace(lap: Lap, s0: number, s1: number, L: number, step = 2): Trace {
 }
 
 export function buildDebrief(an: SessionAnalyser, store: Store | null): Debrief | null {
-  const u = an.lastUpdate, m = an.model;
+  // until the new session completes a lap, the debrief stays on the one before it
+  const usePrevious = !an.collector.laps.some((l) => l.timeMs > 0) && an.previous !== null;
+  const u = usePrevious ? an.previous!.update : an.lastUpdate, m = an.model;
   if (!u) return null;
-  const laps = an.collector.laps;
+  const laps = usePrevious ? an.previous!.laps : an.collector.laps;
+  if (!laps.length) return null; // a known track but no lap yet: nothing to debrief
   const pb = personalBest(laps);
   const fp = u.fingerprint;
   const top: CornerDebrief[] = [];
@@ -62,9 +67,9 @@ export function buildDebrief(an: SessionAnalyser, store: Store | null): Debrief 
     // time lost per corner across laps, and the worst lap per corner
     const lost = new Map<number, { total: number; worstLap: number; worstDelta: number }>();
     for (const l of laps) {
-      if (l === pb || !l.ch || l.valid === false) continue;
+      if (l === pb || !l.ch || l.rewound || l.valid === false) continue;
       for (const d of segmentDeltas(l, pb, segs)) {
-        if (d.seg.kind !== 'corner') continue;
+        if (d.seg.kind !== 'corner' || d.deltaMs > INCIDENT_MS) continue; // a spin or off is not a technique to fix
         const idx = d.seg.corner!.index;
         const e = lost.get(idx) ?? { total: 0, worstLap: l.number, worstDelta: -Infinity };
         e.total += Math.max(0, d.deltaMs);
@@ -104,7 +109,7 @@ export function buildDebrief(an: SessionAnalyser, store: Store | null): Debrief 
       (drill ? `Next session: ${drill.text}` : '')
     : `${laps.length} laps, no valid reference lap yet.`;
   return {
-    generatedAt: new Date().toISOString(), game: an.collector.laps[0] ? (an.model?.game ?? null) : null,
+    generatedAt: new Date().toISOString(), game: laps[0] ? (an.model?.game ?? null) : null, previousSession: usePrevious,
     trackId: u.trackId, trackName: u.trackName, trackLength: u.trackLength, cornerCount: u.corners.length,
     laps: laps.length, validLaps,
     bestMs: pb?.timeMs ?? null, bestLap: pb?.number ?? null, theoreticalMs: u.theoreticalMs, allTimeBestMs: u.allTimeBestMs,
@@ -118,10 +123,30 @@ export function buildDebrief(an: SessionAnalyser, store: Store | null): Debrief 
   };
 }
 
+/** Saves the debrief (called after every completed lap), so closing the app keeps it. Whatever buildDebrief shows is the
+ *  newest session with laps: the one in progress, or the one before it from this run. */
+export function saveDebrief(an: SessionAnalyser, store: Store | null): void {
+  const d = store ? buildDebrief(an, store) : null;
+  if (d) store!.saveDebrief(JSON.stringify(d));
+}
+
+/** The live debrief; after an app restart, until a lap is completed, the last one saved (with the sessions table as it is now). */
+export function currentDebrief(an: SessionAnalyser, store: Store | null): Debrief | null {
+  const live = buildDebrief(an, store);
+  if (live || !store) return live;
+  const json = store.lastDebrief();
+  if (!json) return null;
+  try {
+    const d = JSON.parse(json) as Debrief;
+    return { ...d, previousSession: true, progress: d.trackId ? store.history(d.trackId) : d.progress };
+  } catch { return null; } // a damaged row: show nothing rather than guess
+}
+
 function targetFor(c: CornerDebrief): string {
   const b = c.metrics.best;
   const parts: string[] = [];
-  if (b.brakePointM !== null) parts.push(`brake ${Math.round(b.brakePointM)} m before the turn`);
+  // the bend can begin before the braking point on a fast entry: then the brake point is measured into the bend
+  if (b.brakePointM !== null) parts.push(b.brakePointM >= 0 ? `brake ${Math.round(b.brakePointM)} m before the turn` : `brake ${Math.round(-b.brakePointM)} m after the bend begins`);
   parts.push(`minimum ${Math.round(b.minSpeed * 3.6)} km/h`);
   if (b.throttlePickupM !== null) parts.push(`throttle ${b.throttlePickupM <= 0 ? Math.abs(Math.round(b.throttlePickupM)) + ' m before' : Math.round(b.throttlePickupM) + ' m after'} the apex`);
   return parts.join(', ');

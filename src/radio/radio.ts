@@ -4,13 +4,16 @@ import type { Bus, StatusSnapshot } from '../core/bus.ts';
 import type { AdapterEvent, NormalisedFrame } from '../core/types.ts';
 import type { SessionAnalyser, AnalysisUpdate } from '../analysis/session.ts';
 import { buildZones, canStartCall, StraightHeuristic, type ZoneMap } from './safezones.ts';
-import { RadioQueue, type Call, type Chattiness } from './queue.ts';
+import { RadioQueue, type Call, type Chattiness, isReply } from './queue.ts';
 import { coachingCalls, flagCall, fuelCall, lapCalls, safetyCarCall, tyreCalls, RADIO_CHECK, type CallContext } from './calls.ts';
 import { checkCall } from './rules.ts';
 import type { TtsEngine, Pcm } from './tts.ts';
 import type { AudioSink, PlayHandle } from './audio.ts';
 import type { Phraser } from '../llm/phrase.ts';
 import { answerQuestion, type Answer, type QaContext } from '../llm/qa.ts';
+
+/** no frame for this long: no game is sending (game closed, PS5 off), so nobody is driving */
+const NO_GAME_MS = 60_000;
 
 export interface SpokenCall {
   text: string; reason: string; priority: number; key: string; facts: Call['facts'];
@@ -43,6 +46,8 @@ export class Radio {
   private tts: TtsEngine | null;
   private sinks: AudioSink[];
   muted: boolean;
+  /** called when a spoken "mute" took effect, so the app can persist it */
+  onMutedByVoice: (() => void) | null = null;
   now: () => number;
   phraser: Phraser | null;
   private lastUpdate: AnalysisUpdate | null = null;
@@ -91,7 +96,7 @@ export class Radio {
   onFrame(f: NormalisedFrame): void {
     const now = this.now();
     this.lastFrame = f; this.lastFrameWall = performance.now();
-    this.heuristic.update(f.t, f.input.throttle, f.input.brake, f.input.steer);
+    this.heuristic.update(f.t, f.input.throttle, f.input.brake, f.input.steer, (f.speed !== null && f.speed < 40) || (f.flags.safetyCar !== null && f.flags.safetyCar !== 'none'));
     // lap distance: the game's where provided, else projection onto the learned track
     if (f.lap.distance !== null) this.s = f.lap.distance;
     else if (this.analyser.projector && f.pos) { const r = this.analyser.projector.project(f.pos.x, f.pos.z, this.hint); this.s = r.s; this.hint = r.s; }
@@ -111,7 +116,9 @@ export class Radio {
     switch (e.type) {
       case 'flag.change': { const c = flagCall(e.fia, this.lastFrame?.lap.sector ?? null, ctx); if (c) this.enqueue(c); break; }
       case 'safetycar': { const c = safetyCarCall(e.status, e.phase, ctx); if (c) this.enqueue(c); break; }
-      case 'session.start': this.queue.clear(); this.prepared.clear(); this.prevPbMs = null; this.fuelAtLapStart = []; this.zones = null; this.transcript = []; break;
+      case 'session.start': this.queue.clear(); this.prepared.clear(); this.prevPbMs = null; this.fuelAtLapStart = []; this.transcript = [];
+        // a known track with a saved reference lap has known braking zones from the first metre of the next session
+        this.zones = this.analyser.model && this.analyser.tracedLaps().length ? buildZones(this.analyser.model, this.analyser.tracedLaps()) : null; break;
       case 'stream.lost': this.queue.clear(); break;
     }
     this.tick(now, e.type === 'flag.change' || e.type === 'safetycar');
@@ -121,7 +128,8 @@ export class Radio {
     this.lastUpdate = u;
     const now = this.now();
     const ctx: CallContext = { now, triggerT: now };
-    if (this.analyser.model) this.zones = buildZones(this.analyser.model, this.analyser.collector.laps);
+    // no lap with a trace yet means no known braking zones: never build a map that calls everything safe
+    if (this.analyser.model && this.analyser.tracedLaps().length) this.zones = buildZones(this.analyser.model, this.analyser.tracedLaps());
     const assists = { abs: this.lastFrame?.assists.abs ?? null, tc: this.lastFrame?.assists.tc ?? null };
     for (const c of lapCalls(u, this.prevPbMs, this.queue.mode, ctx)) this.enqueue(c);
     for (const c of coachingCalls({ update: u, assists, max: this.queue.limits.coachingPerLap }, ctx)) this.enqueue(c);
@@ -141,22 +149,56 @@ export class Radio {
         if (perLap > 0.01) fuelLaps = f.fuel.level / perLap;
       }
       this.fuelLapsEstimate = fuelLaps; this.lapsLeft = lapsLeft;
-      if (fuelLaps !== null) { const c = fuelCall(fuelLaps, lapsLeft, ctx); if (c) this.enqueue(c); }
+      // "fuel is good" once, then only when the picture changes (short, or good again after being short); short every lap
+      if (fuelLaps !== null) { const c = fuelCall(fuelLaps, lapsLeft, ctx); const lastSaid = [...this.transcript].reverse().find((t) => t.key.startsWith('fuel:'))?.key; if (c && !(c.key === 'fuel:ok' && lastSaid === 'fuel:ok')) this.enqueue(c); }
     } else { this.fuelLapsEstimate = f.fuel.lapsRemaining; this.lapsLeft = null; }
     if (f.lap.number !== null && f.lap.number !== this.lastTyreCheckLap) { this.lastTyreCheckLap = f.lap.number; for (const c of tyreCalls(f, ctx)) this.enqueue(c); }
   }
 
   /** Push-to-talk question. Answered from data (rules first, LLM optional), spoken at the next safe moment. */
-  async ask(question: string): Promise<Answer> {
+  async ask(question: string, opts: { voice?: boolean } = {}): Promise<Answer> {
     const f = this.lastFrame;
     const ctx: QaContext = { update: this.lastUpdate, frame: f, fuelLaps: this.fuelLapsEstimate ?? f?.fuel.lapsRemaining ?? null, lapsLeft: this.lapsLeft, game: f?.game ?? null };
     const a = await answerQuestion(question, ctx, this.phraser);
+    // a spoken question that matched nothing is more likely misheard than unanswerable: ask the driver to repeat it
+    if (opts.voice && a.source === 'none') {
+      // no game sending for a minute: an unclear phrase is room audio (music, TV), not the driver. 2026-11-08: 7 "Say again?" to songs with "at last" in them
+      if (!f || performance.now() - this.lastFrameWall > NO_GAME_MS) return a;
+      a.text = 'Say again?';
+    }
     const now = this.now();
-    const call: Call = { text: a.text, priority: 2, key: `qa:${now}`, reason: `answer: ${question}`, facts: a.facts, dueAfter: now, expiresAt: now + 20000, immediate: false, createdAt: now, triggerT: now };
+    const call: Call = { text: a.text, priority: 2, key: `qa:${now}`, reason: `answer: ${question}`, facts: a.facts, dueAfter: now, expiresAt: now + (a.source === 'none' ? 20000 : 45000), immediate: false, createdAt: now, triggerT: now }; // an answer waits for a long enough safe straight (up to ~20 s on a fast lap); 'Say again?' does not
     this.enqueue(call, true);
     this.tick(now);
     return a;
   }
+
+  /** Say something at the next safe moment (voice command confirmations, repeats). */
+  announce(text: string, key = `say:${this.now()}`, priority: 1 | 2 = 2): void {
+    const now = this.now();
+    this.enqueue({ text, priority, key, reason: 'voice command', facts: {}, dueAfter: now, expiresAt: now + 20000, immediate: false, createdAt: now, triggerT: now }, true);
+    this.tick(now);
+  }
+
+  /** Say the last spoken call again ("say that again"). */
+  repeatLast(): boolean {
+    const last = [...this.transcript].reverse().find((c) => !c.key.startsWith('voice:') && !c.key.startsWith('say:'));
+    if (!last) { this.announce('Nothing to repeat.'); return false; }
+    this.announce(last.text, `repeat:${this.now()}`);
+    return true;
+  }
+
+  /** Short cue that the engineer heard the wake word. Skipped while a call is playing. */
+  beep(): void {
+    if (this.muted || this.sinks.length === 0 || this.now() < this.busyUntil) return;
+    const rate = 22050, n = Math.round(rate * 0.09), s = new Int16Array(n);
+    for (let i = 0; i < n; i++) s[i] = Math.round(Math.sin(2 * Math.PI * 1100 * i / rate) * 7000 * Math.min(1, i / 200, (n - i) / 400));
+    const pcm = { samples: s, sampleRate: rate, durationS: n / rate };
+    for (const k of this.sinks) k.play(pcm);
+  }
+
+  /** Radio-clock time until which our own voice is (or may still be) coming out of the speakers. */
+  get busyUntil(): number { return this.playing?.until ?? 0; }
 
   // ---- queue and speaking ----
 
@@ -196,6 +238,13 @@ export class Radio {
     return null;
   }
 
+
+  /** No live car to endanger: no data, stale data, off track or paused. Only then may a reply skip the safe-zone gate. */
+  private notDriving(): boolean {
+    const f = this.lastFrame;
+    return !f || performance.now() - this.lastFrameWall > 3000 || f.flags.onTrack === false || f.flags.paused === true;
+  }
+
   /** Called on every frame/event: speak the next allowed call if the road ahead is safe. */
   tick(now: number, urgent = false): void {
     if (this.playing) {
@@ -207,13 +256,16 @@ export class Radio {
     const quiet = this.quietReason(now);
     const call = this.queue.next(now);
     if (!call) return;
-    if (quiet && call.priority > 1) return; // safety calls still go out when the car is on track
+    // a reply to the driver's own question is spoken even with no live data (menus, garage); on track it waits for a safe moment like everything else
+    const idleReply = isReply(call) && this.notDriving();
+    if (quiet && call.priority > 1 && !idleReply) return; // safety calls still go out when the car is on track
     const prep = this.prepared.get(call.key);
     if (!prep || prep instanceof Promise) { if (prep instanceof Promise) prep.then(() => this.tick(this.now())); return; }
-    const f = this.lastFrame!;
+    const f = this.lastFrame;
     let zone: SpokenCall['zone'];
-    if (this.zones && this.s !== null) { if (!canStartCall(this.zones, this.s, f.speed, prep.pcm.durationS)) return; zone = 'safe'; }
-    else { if (call.priority > 1 || !this.heuristic.safe) return; zone = 'heuristic'; }
+    if (idleReply) zone = 'unknown';
+    else if (this.zones && this.s !== null) { if (!canStartCall(this.zones, this.s, f!.speed, prep.pcm.durationS)) return; zone = 'safe'; }
+    else { if ((call.priority > 1 && !isReply(call)) || !this.heuristic.safe) return; zone = 'heuristic'; } // no track model yet: only safety calls and replies, and only on a straight
     this.speak(prep, now, zone);
   }
 
@@ -222,6 +274,7 @@ export class Radio {
     this.queue.spoken(call);
     this.prepared.delete(call.key);
     const handles = this.muted ? [] : this.sinks.map((s) => s.play(pcm));
+    if (call.key === 'voice:mute') { this.muted = true; this.onMutedByVoice?.(); } // the confirmation is the last thing said
     const until = chosen + pcm.durationS * 1000 + 250;
     this.playing = { call, handles, until };
     // record now (synchronously, so replay tests see it); the sink patches audioStart when the device takes the buffer

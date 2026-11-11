@@ -19,3 +19,5 @@ Policy is in `DECISIONS.md` D7. This list is updated whenever a file or idea is 
 | sherpa-onnx-node + sherpa-onnx-win-x64 | Apache-2.0 | Offline TTS runtime (worker thread) | dependency |
 
 Read for ideas only, no code copied: snipem/gt7dashboard (GPL-3.0), gt-telem (GPL/LGPL), Bornhall/gt7telemetry (GPL-3.0). Not used: Volodrum/CrossPlatformF1TelemetryApp (no licence).
+
+| sherpa-onnx streaming zipformer en-20M (2023-02-17), k2-fsa | Apache-2.0 | Offline speech recognition for hands-free voice | `models/` (downloaded by `npm run voice:get`) |

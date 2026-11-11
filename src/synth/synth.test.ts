@@ -42,6 +42,7 @@ describe('end to end: synthetic datagrams → adapters', () => {
       const a = new F1Adapter();
       const events: AdapterEvent[] = []; let frames = 0;
       for (const r of recs) { const o = a.feed(r.data, r.t); events.push(...o.events); frames += o.frames.length; }
+      frames += a.tick(1e12).frames.length; // the last frame is emitted when the next would begin
       expect(a.stats.badLength).toBe(0);
       expect(frames).toBe(sess.samples.length);
       // F1 numbers the out lap as lap 1 (time 0 here); flying laps are 2..4

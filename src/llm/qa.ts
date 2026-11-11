@@ -4,6 +4,7 @@ import type { AnalysisUpdate } from '../analysis/session.ts';
 import type { NormalisedFrame } from '../core/types.ts';
 import type { Phraser } from './phrase.ts';
 import { sayLapTime } from '../radio/calls.ts';
+import { classify } from '../voice/intent.ts';
 
 export interface QaContext { update: AnalysisUpdate | null; frame: NormalisedFrame | null; fuelLaps: number | null; lapsLeft: number | null; game: 'f1' | 'gt7' | null }
 export interface Answer { text: string; intent: string; facts: Record<string, number | string | null>; source: 'rule' | 'llm' | 'none' }
@@ -11,7 +12,7 @@ export interface Answer { text: string; intent: string; facts: Record<string, nu
 const fmt = (ms: number) => { const m = Math.floor(ms / 60000), s = ((ms % 60000) / 1000).toFixed(1); return `${m} ${s}`; };
 const say = sayLapTime;
 const WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve'];
-const tenths = (ms: number) => { const n = Math.max(1, Math.round(Math.abs(ms) / 100)); return n > 12 ? `${(Math.abs(ms) / 1000).toFixed(1)} seconds` : n === 1 ? 'a tenth' : `${WORDS[n]} tenths`; };
+const tenths = (ms: number) => { const n = Math.max(1, Math.round(Math.abs(ms) / 100)); return n >= 10 ? `${(Math.abs(ms) / 1000).toFixed(1)} seconds` : n === 1 ? 'a tenth' : `${WORDS[n]} tenths`; };
 
 export function factSheet(c: QaContext): string {
   const u = c.update, f = c.frame;
@@ -38,62 +39,72 @@ export function factSheet(c: QaContext): string {
 }
 
 export function answerByRule(q: string, c: QaContext): Answer | null {
-  const s = q.toLowerCase();
   const u = c.update, f = c.frame;
   const none = (intent: string, what: string): Answer => ({ text: `${what} not provided by this game.`, intent, facts: {}, source: 'rule' });
-  if (/fuel|petrol|gas\b/.test(s)) {
-    if (!f || f.fuel.level === null) return none('fuel', 'Fuel');
-    if (c.fuelLaps !== null && c.lapsLeft !== null) {
-      const margin = c.fuelLaps - c.lapsLeft;
-      return { text: margin >= 0.5 ? `Fuel is good, ${Math.floor(margin)} laps spare.` : margin > -0.5 ? 'Fuel is marginal, lift and coast.' : `Fuel, ${Math.ceil(-margin)} laps short.`, intent: 'fuel', facts: { fuelLaps: +c.fuelLaps.toFixed(1), lapsLeft: c.lapsLeft }, source: 'rule' };
+  const r = (text: string, intent: string, facts: Answer['facts'] = {}): Answer => ({ text, intent, facts, source: 'rule' });
+  switch (classify(q)) {
+    case 'fuel': {
+      if (!f || f.fuel.level === null) return none('fuel', 'Fuel');
+      if (c.fuelLaps !== null && c.lapsLeft !== null) {
+        const margin = c.fuelLaps - c.lapsLeft;
+        return r(margin >= 0.5 ? `Fuel is good, ${Math.floor(margin)} laps spare.` : margin > -0.5 ? 'Fuel is marginal, lift and coast.' : `Fuel, ${Math.ceil(-margin)} laps short.`, 'fuel', { fuelLaps: +c.fuelLaps.toFixed(1), lapsLeft: c.lapsLeft });
+      }
+      if (c.fuelLaps !== null) return r(`Fuel for ${Math.floor(c.fuelLaps)} more laps.`, 'fuel', { fuelLaps: +c.fuelLaps.toFixed(1) });
+      return r(`Fuel ${f.fuel.level.toFixed(0)}, no lap estimate yet.`, 'fuel', { level: +f.fuel.level.toFixed(1) });
     }
-    if (c.fuelLaps !== null) return { text: `Fuel for ${Math.floor(c.fuelLaps)} more laps.`, intent: 'fuel', facts: { fuelLaps: +c.fuelLaps.toFixed(1) }, source: 'rule' };
-    return { text: `Fuel ${f.fuel.level.toFixed(0)}, no lap estimate yet.`, intent: 'fuel', facts: { level: +f.fuel.level.toFixed(1) }, source: 'rule' };
+    case 'tyres': {
+      if (!f?.wheels.surfaceTemp) return none('tyres', 'Tyre data');
+      // wheels are FL FR RL RR: say each pair left then right, and what the numbers are
+      const w = f.wheels.wear?.map(Math.round), t = f.wheels.surfaceTemp.map(Math.round);
+      if (w && !/temp|hot|cold|warm|heat/i.test(q)) {
+        const i = w.indexOf(Math.max(...w));
+        return r(`${['Front left', 'Front right', 'Rear left', 'Rear right'][i]} worst, ${w[i]} percent wear.`, 'tyres', { fl: w[0]!, fr: w[1]!, rl: w[2]!, rr: w[3]! });
+      }
+      return r(`Surface temps: fronts ${t[0]} and ${t[1]}, rears ${t[2]} and ${t[3]} degrees.`, 'tyres', { fl: t[0]!, fr: t[1]!, rl: t[2]!, rr: t[3]! });
+    }
+    case 'losing': {
+      if (u && !u.hasReference && u.referenceMs !== null) return r('No clean trace of that lap, ask after the next one.', 'losing'); // race start from the grid, or an outage: no trace
+      if (!u || !u.hasReference) return r('No reference lap yet, keep lapping.', 'losing');
+      if (!u.worstCorners.length) return r('Nowhere big, you matched your best through every corner.', 'losing');
+      const w = u.worstCorners.slice(0, 2);
+      return r(`${w.map((x) => `Turn ${x.corner}, ${tenths(x.deltaMs)}`).join(', and ')}.`, 'losing', Object.fromEntries(w.map((x) => [`turn${x.corner}`, Math.round(x.deltaMs)])));
+    }
+    case 'best': {
+      if (!u || u.pbMs === null) return r('No valid lap yet.', 'best');
+      return r(`Best is ${say(u.pbMs)}, lap ${u.pbLap}.`, 'best', { bestMs: u.pbMs, lap: u.pbLap });
+    }
+    case 'lap': {
+      const last = u?.laps[u.laps.length - 1];
+      if (!last) return r('No completed lap yet.', 'lap');
+      const d = last.deltaToPbMs;
+      return r(`${say(last.timeMs)}${d && d > 0 ? `, ${tenths(d)} off your best` : d === 0 ? ', your best' : ''}.`, 'lap', { lapMs: last.timeMs, deltaMs: d });
+    }
+    case 'consistency': {
+      const sc = u?.fingerprint?.consistencyScore;
+      if (sc == null) return r('Need three laps for that.', 'consistency');
+      return r(`Consistency ${Math.round(sc)} out of 100.`, 'consistency', { score: Math.round(sc) });
+    }
+    case 'position': {
+      if (!f || f.race.position === null) return none('position', 'Race position');
+      return r(`You are P${f.race.position}.`, 'position', { position: f.race.position });
+    }
+    case 'laps-left': {
+      if (c.lapsLeft === null) return none('laps', 'Lap count');
+      return r(`${c.lapsLeft} laps to go.`, 'laps', { lapsLeft: c.lapsLeft });
+    }
+    case 'track': {
+      if (!u || !u.corners.length) return r('Still learning the track.', 'track');
+      return r(`${u.trackName ?? 'This track'}, ${u.corners.length} corners, ${Math.round((u.trackLength ?? 0) / 100) / 10} kilometres.`, 'track', { corners: u.corners.length });
+    }
+    case 'flags': {
+      if (!f || f.flags.fia === null) return none('flags', 'Flag status');
+      return r(f.flags.safetyCar && f.flags.safetyCar !== 'none' ? `${f.flags.safetyCar} safety car out.` : f.flags.fia === 'none' ? 'All clear, no flags.' : `${f.flags.fia} flag.`, 'flags', { flag: f.flags.fia });
+    }
+    case 'radio-check': return r('Loud and clear.', 'radio');
+    case 'thanks': return r('Copy.', 'thanks');
+    case 'gap': case 'weather': return r("I don't have that yet.", 'unsupported');
+    default: return null; // commands (repeat, mute, modes) are handled by the voice layer
   }
-  if (/tyre|tire|temp|wear|rubber/.test(s)) {
-    if (!f?.wheels.surfaceTemp) return none('tyres', 'Tyre data');
-    const t = f.wheels.surfaceTemp, front = Math.round((t[0] + t[1]) / 2), rear = Math.round((t[2] + t[3]) / 2);
-    const wear = f.wheels.wear ? `, wear ${Math.round(Math.max(...f.wheels.wear))} percent` : '';
-    return { text: `Fronts ${front}, rears ${rear}${wear}.`, intent: 'tyres', facts: { front, rear }, source: 'rule' };
-  }
-  if (/losing|lose|where.*time|slow|weak/.test(s)) {
-    if (!u || !u.worstCorners.length) return { text: 'No reference lap yet, keep lapping.', intent: 'losing', facts: {}, source: 'rule' };
-    const w = u.worstCorners.slice(0, 2);
-    return { text: `${w.map((x) => `Turn ${x.corner}, ${tenths(x.deltaMs)}`).join(', and ')}.`, intent: 'losing', facts: Object.fromEntries(w.map((x) => [`turn${x.corner}`, Math.round(x.deltaMs)])), source: 'rule' };
-  }
-  if (/best|fastest|pb/.test(s)) {
-    if (!u || u.pbMs === null) return { text: 'No valid lap yet.', intent: 'best', facts: {}, source: 'rule' };
-    return { text: `Best is ${say(u.pbMs)}, lap ${u.pbLap}.`, intent: 'best', facts: { bestMs: u.pbMs, lap: u.pbLap }, source: 'rule' };
-  }
-  if (/last lap|lap time|how was that|that lap/.test(s)) {
-    const last = u?.laps[u.laps.length - 1];
-    if (!last) return { text: 'No completed lap yet.', intent: 'lap', facts: {}, source: 'rule' };
-    const d = last.deltaToPbMs;
-    return { text: `${say(last.timeMs)}${d && d > 0 ? `, ${tenths(d)} off your best` : d === 0 ? ', your best' : ''}.`, intent: 'lap', facts: { lapMs: last.timeMs, deltaMs: d }, source: 'rule' };
-  }
-  if (/consisten|rhythm/.test(s)) {
-    const sc = u?.fingerprint?.consistencyScore;
-    if (sc == null) return { text: 'Need three laps for that.', intent: 'consistency', facts: {}, source: 'rule' };
-    return { text: `Consistency ${Math.round(sc)} out of 100.`, intent: 'consistency', facts: { score: Math.round(sc) }, source: 'rule' };
-  }
-  if (/position|gap|ahead|behind|p\d/.test(s)) {
-    if (!f || f.race.position === null) return none('position', 'Race position');
-    return { text: `You are P${f.race.position}.`, intent: 'position', facts: { position: f.race.position }, source: 'rule' };
-  }
-  if (/lap(s)? (left|remaining|to go)|how many laps/.test(s)) {
-    if (c.lapsLeft === null) return none('laps', 'Lap count');
-    return { text: `${c.lapsLeft} laps to go.`, intent: 'laps', facts: { lapsLeft: c.lapsLeft }, source: 'rule' };
-  }
-  if (/track|corner|where are we|circuit/.test(s)) {
-    if (!u || !u.corners.length) return { text: 'Still learning the track.', intent: 'track', facts: {}, source: 'rule' };
-    return { text: `${u.trackName ?? 'This track'}, ${u.corners.length} corners, ${Math.round((u.trackLength ?? 0) / 100) / 10} kilometres.`, intent: 'track', facts: { corners: u.corners.length }, source: 'rule' };
-  }
-  if (/flag|safety car/.test(s)) {
-    if (!f || f.flags.fia === null) return none('flags', 'Flag status');
-    return { text: f.flags.safetyCar && f.flags.safetyCar !== 'none' ? `${f.flags.safetyCar} safety car out.` : f.flags.fia === 'none' ? 'All clear, no flags.' : `${f.flags.fia} flag.`, intent: 'flags', facts: { flag: f.flags.fia }, source: 'rule' };
-  }
-  if (/radio check|can you hear/.test(s)) return { text: 'Loud and clear.', intent: 'radio', facts: {}, source: 'rule' };
-  return null;
 }
 
 export async function answerQuestion(q: string, c: QaContext, phraser: Phraser | null): Promise<Answer> {

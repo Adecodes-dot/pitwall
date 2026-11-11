@@ -22,7 +22,7 @@ const { build } = await import('esbuild');
 const external = ['sherpa-onnx-node', 'sherpa-onnx-win-x64', '@echogarden/audio-io', '@anthropic-ai/sdk'];
 // esbuild's ESM output needs a require shim for CJS dependencies (ws, tweetnacl)
 const banner = { js: 'import { createRequire as __cr } from "node:module"; const require = __cr(import.meta.url);' };
-for (const [entry, out] of [['src/server/main.ts', 'main.mjs'], ['src/radio/tts-worker.ts', 'tts-worker.mjs']] as const) {
+for (const [entry, out] of [['src/server/main.ts', 'main.mjs'], ['src/radio/tts-worker.ts', 'tts-worker.mjs'], ['src/voice/asr-worker.ts', 'asr-worker.mjs']] as const) {
   await build({ entryPoints: [join(root, entry)], bundle: true, platform: 'node', format: 'esm', target: 'node24', external, banner, outfile: join(outDir, out), logLevel: 'warning', sourcemap: false });
   console.log(`bundled ${entry} → dist/server/${out}`);
 }
@@ -54,10 +54,11 @@ if (existsSync(cap)) {
   child.stdout.on('data', (d) => { out += d; }); child.stderr.on('data', (d) => { out += d; });
   let ok = false;
   for (let i = 0; i < 80 && !ok; i++) { await new Promise((r) => setTimeout(r, 500)); try { const j = await fetch('http://localhost:8798/api/debrief').then((r) => r.json()) as { laps?: number }; if ((j.laps ?? 0) >= 2) ok = true; } catch { /* starting */ } }
-  const info = ok ? await fetch('http://localhost:8798/api/settings').then((r) => r.json()) as { ttsLoaded: boolean; version: string } : null;
+  const info = ok ? await fetch('http://localhost:8798/api/settings').then((r) => r.json()) as { ttsLoaded: boolean; voiceAvailable: boolean; version: string } : null;
   child.kill();
   if (!ok) { console.error('SMOKE TEST FAILED\n' + out.slice(-2000)); process.exit(1); }
-  console.log(`smoke test passed: bundled server served a debrief; tts loaded: ${info?.ttsLoaded}; version ${info?.version}`);
+  if (!info?.voiceAvailable) { console.error('SMOKE TEST FAILED: speech recogniser did not load from the bundle\n' + out.slice(-2000)); process.exit(1); }
+console.log(`smoke test passed: bundled server served a debrief; tts loaded: ${info?.ttsLoaded}; voice (speech recognition) loaded: ${info?.voiceAvailable}; version ${info?.version}`);
 }
 if (bundleOnly) process.exit(0);
 
