@@ -54,6 +54,14 @@ describe('debrief', () => {
       expect(html).toContain(d.drill!.text);
       expect(html).not.toContain('<script');
       expect(html.length).toBeGreaterThan(5000);
+      // every trace point is inside its SVG (the pedal traces used to be drawn below the bottom edge)
+      for (const m of html.matchAll(/<svg viewBox="0 0 (\d+) (\d+)"[\s\S]*?<\/svg>/g)) {
+        const h = Number(m[2]);
+        for (const g of m[0].matchAll(/(?:<g transform="translate\(0,(\d+)\)">)?((?:<polyline[^>]*\/>)+)/g)) {
+          const dy = Number(g[1] ?? 0);
+          for (const p of g[2]!.matchAll(/points="([^"]+)"/g)) for (const xy of p[1]!.split(' ')) { const y = Number(xy.split(',')[1]) + dy; expect(y).toBeGreaterThanOrEqual(0); expect(y).toBeLessThanOrEqual(h); }
+        }
+      }
       expect(d.progress).toHaveLength(1);
       store.close();
     });

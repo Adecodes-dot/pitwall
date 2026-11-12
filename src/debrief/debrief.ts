@@ -162,7 +162,7 @@ export function debriefHtml(d: Debrief): string {
     const vmax = Math.max(...c.traces.lap.speed, ...c.traces.ref.speed, 1);
     const line = (arr: number[], scale: (v: number) => number, color: string, w = 2, dash = '') => `<polyline fill="none" stroke="${color}" stroke-width="${w}"${dash ? ` stroke-dasharray="${dash}"` : ''} points="${arr.map((v, i) => `${xs(i).toFixed(1)},${scale(v).toFixed(1)}`).join(' ')}"/>`;
     const ySpeed = (v: number) => pad + (1 - v / vmax) * (H - 2 * pad);
-    const yPedal = (v: number) => H - pad - v * 40;
+    const yPedal = (v: number) => 46 - v * 38; // inside the 60 px band under the speed chart (the group is translated by H)
     const apexX = xs(Math.round((c.corner.sApex - c.windowS0) / 2));
     const entryX = xs(Math.round((c.corner.sStart - c.windowS0) / 2));
     return `<svg viewBox="0 0 ${W} ${H + 60}" width="100%" style="max-width:${W}px"><rect width="${W}" height="${H + 60}" fill="#0f1114" rx="8"/>
