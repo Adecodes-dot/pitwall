@@ -4,6 +4,37 @@ Pit Wall listens to your game's telemetry on your home network, learns how you d
 
 It coaches you. It never touches your controls.
 
+![Debrief from a real 28-lap F1 25 race at Miami](docs/debrief-real-race.png)
+<sub>Debrief from a real 28-lap F1 25 race at Miami: the corner that cost the most time over the race, the worst lap through it (white) against the driver's own best lap (blue dashed), throttle and brake underneath, and one instruction.</sub>
+
+| Track map and per-corner analysis | Hands-free voice and radio log |
+|---|---|
+| ![Analysis tab](docs/milestones/m4-analysis-desktop.png) | ![Radio tab](docs/milestones/m6-voice-desktop.png) |
+
+<sub>Both from replayed test sessions.</sub>
+
+## Highlights
+- **Two game protocols, one schema.** Decodes F1 25 UDP telemetry (packet formats 2024, 2025 and 2026) and Gran Turismo 7's Salsa20-encrypted heartbeat protocol into a single normalised frame where every field can be "not provided by this game". Adapters never invent data.
+- **Learns the track from your first clean lap.** It detects the corners, builds a reference from your fastest lap, and measures every corner pass against your own best: brake point, minimum speed, throttle pick-up and coasting.
+- **A radio that knows when to be quiet.** Calls go into a priority queue and start only on straights, never in a braking zone or mid-corner. A test checks this on every replayed session. Measured latency from decision to sound is 71 ms p95 on a laptop.
+- **Hands-free voice, offline.** Wake word plus intent matching on a local streaming speech recogniser (sherpa-onnx). You ask in your own words ("how's my fuel", "where am I losing time"). It was tuned on real driving logs, including how the recogniser mishears one driver's accent.
+- **Debrief after the session.** The three corners costing the most time, with traces and one instruction each, a theoretical best lap and a drill for next time. It survives an app restart and exports to HTML or JSON.
+- **Fail safe by design.** Missing, late or inconsistent data makes the engineer go quiet rather than guess. Pit laps and spins are kept out of coaching. An optional LLM may only rephrase a call, and any rephrasing that changes a number is rejected.
+- **Ships as a desktop app.** Windows installer (Electron with a bundled Node runtime), plus a phone dashboard served over the home network.
+
+## Built against real races
+Pit Wall was built first against a synthetic driver and track generator, then checked on real PS5 sessions: a Shanghai sprint weekend and the Miami sprint and race. Each real session showed something the synthetic data hid, including menu packets, out laps, Wi-Fi dropouts, flashbacks, pit stops and room noise on the microphone. Each fix comes with a regression test, and the recordings are replayed through the new code before a fix counts as done. The reasoning is in [DECISIONS.md](DECISIONS.md) (36 decisions with their reasons).
+
+- **Tests:** 250 automated tests (vitest), covering the adapters, analysis, radio safety rules, voice and debrief. The installer build also runs a smoke test on the bundled server.
+- **Stack:** TypeScript (strict, ESM) on Node 24 · `node:sqlite` · WebSocket · React + Vite (PWA) · Electron + electron-builder (NSIS) · sherpa-onnx (Piper text-to-speech, streaming speech recognition) · vitest · Playwright.
+- **Docs:** [ARCHITECTURE.md](ARCHITECTURE.md) (processes, packages, telemetry schema), [PRD.md](PRD.md), [RESEARCH.md](RESEARCH.md) (game protocols, audio and TTS choices, prior art), [docs/milestones](docs/milestones) (what each milestone delivered and how it was checked).
+
+Code layout: `src/adapters` (F1, GT7) → `src/analysis` (track model, laps, references) → `src/radio` (safe zones, queue, calls, TTS) and `src/voice` (wake word, intents) → `src/debrief` → `src/server` (HTTP, WebSocket, settings); `ui/` is the dashboard and `app/` the desktop shell.
+
+---
+
+The rest of this page is the user guide.
+
 ## What you need
 - A PS5 with F1 25 or GT7.
 - A Windows 10/11 laptop or mini-PC on the same network as the PS5.
